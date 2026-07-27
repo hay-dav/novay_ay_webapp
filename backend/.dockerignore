@@ -1,7 +1,5 @@
 .env
 .env.*
-!.env.example
-!.env.production.example
 vendor
 storage/logs/*
 storage/framework/cache/*

@@ -19,12 +19,11 @@
 ## 2. Секреты
 
 ```bash
-cp backend/.env.production.example backend/.env.production
-cp .env.production.example .env.production
+touch backend/.env.production .env.production
 chmod 600 backend/.env.production .env.production
 ```
 
-Заполните все пустые значения. Сгенерируйте секреты:
+Заполните все значения согласно [перечню переменных](environment-setup.md). Сгенерируйте секреты:
 
 ```bash
 openssl rand -base64 32

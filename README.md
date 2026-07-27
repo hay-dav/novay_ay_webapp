@@ -12,8 +12,8 @@
 ## Локальный запуск
 
 ```bash
-cp frontend/.env.example frontend/.env
-cp backend/.env.example backend/.env
+# Создайте локальные frontend/.env и backend/.env вне Git.
+# Полный перечень переменных: docs/environment-setup.md
 docker compose up -d --build
 docker compose exec backend php artisan key:generate
 docker compose exec backend php artisan migrate
