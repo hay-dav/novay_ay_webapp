@@ -26,8 +26,8 @@ server {
     root /var/www/html/public;
     index index.php;
     client_max_body_size 520m;
-    ssl_certificate /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/app.lazareva-secret.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.lazareva-secret.ru/privkey.pem;
     include /etc/nginx/snippets/security.conf;
 
     location ~ ^/(app|apps)/ {
