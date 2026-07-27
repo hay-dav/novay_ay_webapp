@@ -1,0 +1,140 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./backend:/var/www/html
+    depends_on:
+      - backend
+    networks:
+      - novaya-ya
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - livekit
+    environment:
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: dev-secret-change-before-production-123456
+      LIVEKIT_PUBLIC_URL: ws://localhost:7880
+    networks:
+      - novaya-ya
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080/api/v1
+    networks:
+      - novaya-ya
+
+  queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: php artisan queue:work --tries=3 --timeout=90
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - novaya-ya
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: novaya_ya
+      POSTGRES_USER: novaya_ya
+      POSTGRES_PASSWORD: novaya_ya
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - novaya-ya
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - novaya-ya
+
+  soketi:
+    image: quay.io/soketi/soketi:1.6-16-debian
+    environment:
+      SOKETI_DEFAULT_APP_ID: novaya-ya
+      SOKETI_DEFAULT_APP_KEY: local
+      SOKETI_DEFAULT_APP_SECRET: secret
+    ports:
+      - "6001:6001"
+    networks:
+      - novaya-ya
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    depends_on:
+      - redis
+      - coturn
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "127.0.0.1:6789:6789"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./infra/livekit/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      - novaya-ya
+
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    command: -c /etc/coturn/turnserver.conf
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+    volumes:
+      - ./infra/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    networks:
+      - novaya-ya
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - novaya-ya
+
+networks:
+  novaya-ya:
+
+volumes:
+  postgres-data:
+  minio-data:
+  frontend-node-modules:

@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --color-background: #141218;
+  --color-surface: #141218;
+  --color-surface-lowest: #0f0d13;
+  --color-surface-low: #1d1a21;
+  --color-surface-container: #211e25;
+  --color-surface-high: #2b292f;
+  --color-surface-highest: #36333a;
+  --color-surface-bright: #3b383f;
+  --color-on-surface: #e7e0e9;
+  --color-on-muted: #cec3d3;
+  --color-outline: #978d9d;
+  --color-outline-variant: #4b4451;
+  --color-primary: #dbb8ff;
+  --color-primary-container: #6d38a8;
+  --color-primary-strong: #8c55c7;
+  --color-secondary: #dcb8ff;
+  --color-tertiary: #ddb8ff;
+  --color-danger: #ffb4ab;
+  --color-danger-container: #93000a;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-width: 320px;
+    margin: 0;
+    background: #0f0d13;
+    color: #e7e0e9;
+    font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-feature-settings: "liga";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background: rgba(36, 32, 43, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 32px rgba(109, 56, 168, 0.18);
+    backdrop-filter: blur(20px);
+  }
+
+  .app-gradient {
+    background:
+      radial-gradient(circle at 68% 4%, rgba(109, 56, 168, 0.22), transparent 34rem),
+      linear-gradient(180deg, #141218 0%, #0f0d13 100%);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 20px rgba(219, 184, 255, 0.42);
+  }
+
+  .tap-clear {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+@keyframes watermark-drift {
+  0%, 100% { left: 5%; top: 8%; }
+  25% { left: 62%; top: 18%; }
+  50% { left: 55%; top: 72%; }
+  75% { left: 12%; top: 64%; }
+}
+
+.video-watermark {
+  position: absolute;
+  z-index: 20;
+  left: 5%;
+  top: 8%;
+  max-width: 34%;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 42%);
+  color: rgb(255 255 255 / 72%);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  pointer-events: none;
+  user-select: none;
+  animation: watermark-drift 18s ease-in-out infinite;
+}
+
+@media (max-width: 639px) {
+  .live-stream-overlay > section {
+    display: flex;
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    flex-direction: column;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .live-stream-overlay > section > header {
+    flex-shrink: 0;
+    padding-top: max(1rem, env(safe-area-inset-top));
+  }
+
+  .live-stream-overlay > section {
+    position: relative;
+  }
+
+  .live-stream-overlay .live-stage {
+    height: 100%;
+  }
+
+  .live-stream-overlay .live-stage-video {
+    object-fit: cover;
+  }
+
+  .live-stream-overlay > section > footer {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    background: linear-gradient(transparent, rgb(0 0 0 / 82%) 36%);
+  }
+
+  .live-stream-overlay > section > footer > div:last-child {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+
+  .live-stream-overlay > section > footer > div:last-child > div:first-child {
+    display: none;
+  }
+
+  .live-stream-overlay > section > footer > div:last-child > div {
+    flex-direction: row;
+    align-items: center;
+  }
+}

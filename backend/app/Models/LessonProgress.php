@@ -1,0 +1,16 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class LessonProgress extends Model
+{
+    protected $fillable = ['user_id', 'lesson_id', 'status', 'progress_percent', 'completed_at'];
+
+    protected function casts(): array
+    {
+        return ['completed_at' => 'datetime'];
+    }
+}
+

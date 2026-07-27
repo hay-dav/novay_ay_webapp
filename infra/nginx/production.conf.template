@@ -1,0 +1,55 @@
+limit_req_zone $binary_remote_addr zone=auth:10m rate=10r/m;
+
+server {
+    listen 80;
+    server_name ${APP_DOMAIN} ${API_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${APP_DOMAIN};
+    ssl_certificate /etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/security.conf;
+
+    location / {
+        proxy_pass http://frontend:80;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${API_DOMAIN};
+    root /var/www/html/public;
+    index index.php;
+    client_max_body_size 520m;
+    ssl_certificate /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/security.conf;
+
+    location ~ ^/(app|apps)/ {
+        proxy_pass http://soketi:6001;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    location ~ ^/api/v1/auth/(login|register)$ {
+        limit_req zone=auth burst=5 nodelay;
+        try_files $uri /index.php?$query_string;
+    }
+
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass backend:9000;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_read_timeout 600s;
+    }
+
+    location ~ /\.(?!well-known).* { deny all; }
+}
