@@ -11,26 +11,32 @@ use App\Models\NotificationTemplate;
 use App\Models\ProgressEntry;
 use App\Models\User;
 use App\Models\WorkoutCompletion;
+use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Carbon;
 
 class AdminDashboardController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, MediaStorage $media)
     {
         abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
 
-        $clients = User::query()
+        $clientsQuery = User::query()
             ->where('role', 'client')
-            ->when($request->user()->role->value !== 'admin', fn ($query) => $query->whereHas(
+            ->when(! in_array($request->user()->role->value, ['admin', 'curator'], true), fn ($query) => $query->whereHas(
                 'clientProfile',
                 fn ($profile) => $profile->where('trainer_id', $request->user()->id),
-            ))
+            ));
+
+        $clientsCount = (clone $clientsQuery)->count();
+        $allClientIds = (clone $clientsQuery)->pluck('id');
+
+        $clients = $clientsQuery
             ->with('clientProfile:id,user_id,goal')
             ->latest()
-            ->limit(50)
-            ->get(['id', 'name', 'email', 'phone', 'avatar_path', 'access_status', 'group_name', 'tags', 'access_ends_at']);
+            ->when(! $request->boolean('all_clients'), fn ($query) => $query->limit(50))
+            ->get(['id', 'name', 'email', 'phone', 'avatar_path', 'access_status', 'group_name', 'tags', 'access_ends_at', 'created_at']);
 
         $progressByUser = \App\Models\LessonProgress::query()
             ->selectRaw('user_id, ROUND(AVG(progress_percent)) as progress_percent')
@@ -42,6 +48,12 @@ class AdminDashboardController extends Controller
             'progress_percent',
             (int) ($progressByUser[$client->id] ?? 0),
         ));
+
+        $clients->each(function (User $client) use ($media): void {
+            if ($client->avatar_path) {
+                $client->setAttribute('avatar_path', $media->secureCdnUrl($client->avatar_path, 3600));
+            }
+        });
 
         $completedWorkouts = WorkoutCompletion::query()
             ->selectRaw('user_id, COUNT(*) as completed_workouts_count')
@@ -58,7 +70,7 @@ class AdminDashboardController extends Controller
             ->whereIn('user_id', $clients->pluck('id'))
             ->orderByDesc('measured_on')
             ->orderByDesc('id')
-            ->get(['id', 'user_id', 'weight_kg', 'waist_cm', 'hips_cm', 'chest_cm', 'measured_on'])
+            ->get(['id', 'user_id', 'weight_kg', 'waist_cm', 'hips_cm', 'chest_cm', 'mood', 'comment', 'measured_on'])
             ->unique('user_id')
             ->keyBy('user_id');
 
@@ -69,13 +81,43 @@ class AdminDashboardController extends Controller
             ]));
         });
 
+        $queueMeasurements = ProgressEntry::query()
+            ->whereIn('user_id', $allClientIds)
+            ->orderByDesc('measured_on')
+            ->orderByDesc('id')
+            ->get(['id', 'user_id', 'weight_kg', 'waist_cm', 'mood', 'comment', 'measured_on'])
+            ->unique('user_id')
+            ->keyBy('user_id');
+        $reportClientsById = User::query()
+            ->whereIn('id', $queueMeasurements->keys())
+            ->get(['id', 'name'])
+            ->keyBy('id');
+        $reportQueue = $queueMeasurements
+            ->sortByDesc('measured_on')
+            ->map(function (ProgressEntry $measurement, int $userId) use ($reportClientsById): array {
+                return [
+                    'client_id' => $userId,
+                    'client_name' => $reportClientsById->get($userId)?->name ?? 'Участница',
+                    'measured_on' => $measurement->measured_on,
+                    'weight_kg' => $measurement->weight_kg,
+                    'waist_cm' => $measurement->waist_cm,
+                    'mood' => $measurement->mood,
+                    'comment' => $measurement->comment,
+                ];
+            })
+            ->values()
+            ->take(10);
+
         return response()->json([
             'data' => [
                 'users' => User::query()->count(),
                 'paid_users' => User::query()->where('access_status', 'paid')->count(),
                 'pending_access' => AccessRequest::query()->where('status', 'pending')->count(),
+                'pending_reviews' => $reportQueue->count(),
                 'courses' => Course::query()->count(),
+                'clients_count' => $clientsCount,
                 'clients' => $clients,
+                'report_queue' => $reportQueue,
             ],
         ]);
     }
@@ -201,7 +243,7 @@ class AdminDashboardController extends Controller
 
     private function assertCanAccessClient(Request $request, User $client): void
     {
-        if ($request->user()->role->value === 'admin') {
+        if (in_array($request->user()->role->value, ['admin', 'curator'], true)) {
             return;
         }
 

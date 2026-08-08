@@ -1,8 +1,11 @@
 <script setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import AppShell from '@/layouts/AppShell.vue';
 
+const route = useRoute();
 const cookieConsentVisible = ref(false);
+const isGuestLive = computed(() => route.name === 'guest-live');
 
 onMounted(() => {
   cookieConsentVisible.value = localStorage.getItem('novaya-ya-cookie-consent') !== 'accepted';
@@ -15,7 +18,8 @@ function acceptCookies() {
 </script>
 
 <template>
-  <AppShell />
+  <RouterView v-if="isGuestLive" />
+  <AppShell v-else />
 
   <div
     v-if="cookieConsentVisible"

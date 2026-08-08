@@ -1,0 +1,19 @@
+{
+  "name": "Новая Я",
+  "short_name": "Новая Я",
+  "description": "Приложение курса «Новая Я»",
+  "lang": "ru",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#141218",
+  "theme_color": "#141218",
+  "icons": [
+    {
+      "src": "/public-image/favicon.png?v=2",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

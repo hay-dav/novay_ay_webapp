@@ -1,12 +1,11 @@
 import { defineStore } from 'pinia';
 import { api } from '@/services/api';
-
-const TOKEN_STORAGE_KEY = 'novaya_ya_token';
+import { clearAuthToken, readAuthToken, storeAuthToken } from '@/services/authStorage';
 
 export const useAuthStore = defineStore('auth', {
     state: () => ({
         user: null,
-        token: sessionStorage.getItem(TOKEN_STORAGE_KEY),
+        token: readAuthToken(),
         loading: false,
     }),
     getters: {
@@ -21,7 +20,7 @@ export const useAuthStore = defineStore('auth', {
                 const { data } = await api.post('/auth/login', { email, password });
                 this.token = data.token;
                 this.user = data.user;
-                sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+                storeAuthToken(data.token);
             }
             finally {
                 this.loading = false;
@@ -31,19 +30,31 @@ export const useAuthStore = defineStore('auth', {
             const { data } = await api.post('/auth/register', payload);
             this.token = data.token;
             this.user = data.user;
-            sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+            storeAuthToken(data.token);
         },
         async fetchMe() {
             if (!this.token)
                 return;
-            const { data } = await api.get('/auth/me');
-            this.user = data.user;
+            try {
+                const { data } = await api.get('/auth/me');
+                this.user = data.user;
+            }
+            catch (error) {
+                // A lost mobile connection must not erase a valid long-lived
+                // session. Only the server can confirm an invalid token.
+                if (error.response?.status === 401)
+                    this.clearSession();
+                throw error;
+            }
+        },
+        clearSession() {
+            this.user = null;
+            this.token = null;
+            clearAuthToken();
         },
         async logout() {
             await api.post('/auth/logout').catch(() => undefined);
-            this.user = null;
-            this.token = null;
-            sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+            this.clearSession();
         },
     },
 });

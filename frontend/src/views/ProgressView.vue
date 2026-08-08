@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api } from '@/services/api';
 import ProgressChart from '@/components/ProgressChart.vue';
 const entries = ref([]);
@@ -12,6 +12,9 @@ const form = ref({
     measured_on: new Date().toISOString().slice(0, 10),
 });
 const mode = ref('chart');
+const saving = ref(false);
+const saved = ref(false);
+let savedTimer;
 const orderedEntries = computed(() => [...entries.value].sort((a, b) => {
     const dateDifference = new Date(a.measured_on) - new Date(b.measured_on);
     return dateDifference || a.id - b.id;
@@ -40,10 +43,25 @@ async function load() {
     entries.value = data.data;
 }
 async function submit() {
-    const { data } = await api.post('/progress', form.value);
-    entries.value = [...entries.value, data.data];
+    if (saving.value)
+        return;
+    saving.value = true;
+    saved.value = false;
+    window.clearTimeout(savedTimer);
+    try {
+        const { data } = await api.post('/progress', form.value);
+        entries.value = [...entries.value, data.data];
+        saved.value = true;
+        savedTimer = window.setTimeout(() => {
+            saved.value = false;
+        }, 2500);
+    }
+    finally {
+        saving.value = false;
+    }
 }
 onMounted(load);
+onBeforeUnmount(() => window.clearTimeout(savedTimer));
 </script>
 
 <template>
@@ -91,8 +109,8 @@ onMounted(load);
             Дата
             <input v-model="form.measured_on" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" type="date" />
           </label>
-          <button class="rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-6 py-4 font-extrabold text-white" type="submit">
-            Сохранить
+          <button class="rounded-2xl px-6 py-4 font-extrabold text-white transition duration-150 active:scale-[0.98] disabled:cursor-wait disabled:opacity-70" :class="saved ? 'bg-emerald-600 shadow-[0_8px_22px_rgba(16,185,129,0.28)]' : 'bg-gradient-to-br from-primary-container to-primary-strong'" type="submit" :disabled="saving">
+            {{ saving ? 'Сохраняем...' : saved ? '✓ Сохранено' : 'Сохранить' }}
           </button>
         </form>
       </article>

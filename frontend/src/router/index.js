@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth';
 import LandingView from '@/views/LandingView.vue';
 import LoginView from '@/views/LoginView.vue';
 import PrivacyPolicyView from '@/views/PrivacyPolicyView.vue';
+import GuestLiveView from '@/views/GuestLiveView.vue';
 
 const DashboardView = () => import('@/views/DashboardView.vue');
 const CatalogView = () => import('@/views/CatalogView.vue');
@@ -24,6 +25,7 @@ const router = createRouter({
         { path: '/', name: 'landing', component: LandingView },
         { path: '/login', name: 'login', component: LoginView },
         { path: '/privacy-policy', name: 'privacy-policy', component: PrivacyPolicyView },
+        { path: '/live/:token', name: 'guest-live', component: GuestLiveView },
         { path: '/app', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
         { path: '/catalog', name: 'catalog', component: CatalogView, meta: { requiresAuth: true } },
         { path: '/courses/:slug', name: 'course', component: CourseView, meta: { requiresAuth: true } },
@@ -41,7 +43,7 @@ const router = createRouter({
 router.beforeEach(async (to) => {
     const auth = useAuthStore();
     if (auth.token && !auth.user) {
-        await auth.fetchMe().catch(() => auth.logout());
+        await auth.fetchMe().catch(() => undefined);
     }
     if (to.meta.requiresAuth && !auth.user) {
         return { name: 'login' };

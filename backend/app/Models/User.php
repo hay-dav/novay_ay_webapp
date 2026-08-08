@@ -18,6 +18,8 @@ class User extends Authenticatable
 
     protected $fillable = [
         'name',
+        'first_name',
+        'last_name',
         'email',
         'password',
         'role',
@@ -106,5 +108,10 @@ class User extends Authenticatable
     public function progressEntries()
     {
         return $this->hasMany(ProgressEntry::class);
+    }
+
+    public function pushSubscriptions()
+    {
+        return $this->hasMany(PushSubscription::class);
     }
 }

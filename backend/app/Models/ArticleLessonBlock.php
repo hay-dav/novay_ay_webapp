@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ArticleLessonBlock extends Model
 {
-    protected $fillable = ['article_lesson_id', 'type', 'content', 'image_path', 'sort_order'];
+    protected $fillable = ['article_lesson_id', 'type', 'content', 'image_path', 'video_path', 'sort_order'];
 
     public function lesson()
     {

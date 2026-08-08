@@ -1,6 +1,5 @@
 import axios from 'axios';
-
-const TOKEN_STORAGE_KEY = 'novaya_ya_token';
+import { clearAuthToken, readAuthToken } from '@/services/authStorage';
 
 function getApiBaseUrl() {
     const configuredUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api/v1';
@@ -19,15 +18,17 @@ export const api = axios.create({
     },
 });
 api.interceptors.request.use((config) => {
-    const token = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    const token = readAuthToken();
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
 });
 api.interceptors.response.use((response) => response, (error) => {
-    if (error.response?.status === 401) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    // Do not log a user out because a public endpoint or a background request
+    // returned 401. The authenticated /auth/me check is the sole authority.
+    if (error.response?.status === 401 && error.config?.url?.endsWith('/auth/me')) {
+        clearAuthToken();
         if (window.location.pathname !== '/login') {
             window.location.assign('/login');
         }

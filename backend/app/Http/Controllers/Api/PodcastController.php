@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Jobs\OptimizeStoredMedia;
 use App\Models\Podcast;
 use App\Models\User;
 use App\Services\MediaStorage;
@@ -61,6 +62,10 @@ class PodcastController extends Controller
             'audio_path' => $audioPath,
             'access_level' => $validated['access_level'],
         ]);
+        if ($coverPath) {
+            OptimizeStoredMedia::dispatch(Podcast::class, $podcast->id, 'cover_path', $coverPath, 'image', true);
+        }
+        OptimizeStoredMedia::dispatch(Podcast::class, $podcast->id, 'audio_path', $audioPath, 'audio');
 
         return response()->json(['data' => $podcast], 201);
     }

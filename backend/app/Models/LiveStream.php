@@ -8,11 +8,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class LiveStream extends Model
 {
-    protected $fillable = ['host_id', 'recording_workout_id', 'room_name', 'status', 'started_at', 'ended_at', 'host_heartbeat_at'];
+    protected $fillable = ['host_id', 'recording_workout_id', 'recording_title', 'recording_description', 'recording_access_level', 'room_name', 'status', 'started_at', 'ended_at', 'host_heartbeat_at', 'guest_token', 'guest_enabled', 'guest_expires_at', 'participants_enabled', 'egress_id', 'egress_path', 'egress_status'];
 
     protected function casts(): array
     {
-        return ['started_at' => 'datetime', 'ended_at' => 'datetime', 'host_heartbeat_at' => 'datetime'];
+        return ['started_at' => 'datetime', 'ended_at' => 'datetime', 'host_heartbeat_at' => 'datetime', 'guest_expires_at' => 'datetime', 'guest_enabled' => 'boolean', 'participants_enabled' => 'boolean'];
     }
 
     public function host(): BelongsTo

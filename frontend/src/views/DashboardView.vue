@@ -8,20 +8,22 @@ const auth = useAuthStore();
 const notifications = ref([]);
 const clientOverview = ref({ completed_workouts_count: 0 });
 const dashboard = ref({
-    clients: 0,
+    clients_count: 0,
     revenue_cents: 0,
     active_courses: 0,
     pending_reviews: 0,
-    clients_list: [],
     report_queue: [],
 });
 const questionnaire = ref('Цель, ограничения по питанию, опыт тренировок');
 const photoPath = ref('progress/my-before-photo.jpg');
 const requestSent = ref(false);
+const backendOrigin = api.defaults.baseURL.replace(/\/api\/v1\/?$/, '');
 onMounted(async () => {
     if (auth.isTrainer) {
-        const { data } = await api.get('/trainer/dashboard');
-        dashboard.value = data.data;
+        const { data } = await api.get(auth.user?.role === 'admin' ? '/admin/dashboard' : '/trainer/dashboard');
+        dashboard.value = data.data.clients_count === undefined
+            ? { ...dashboard.value, ...data.data, clients_count: data.data.clients ?? 0, clients: data.data.clients_list ?? [] }
+            : { ...dashboard.value, ...data.data, report_queue: data.data.report_queue ?? [] };
         return;
     }
     const [notificationResponse, summaryResponse] = await Promise.all([
@@ -31,6 +33,13 @@ onMounted(async () => {
     notifications.value = notificationResponse.data.data;
     clientOverview.value = summaryResponse.data.data;
 });
+function avatarUrl(path) {
+    if (!path)
+        return '';
+    return /^https?:\/\//i.test(path)
+        ? path
+        : `${backendOrigin}/${String(path).replace(/^\/+/, '')}`;
+}
 async function sendAccessRequest() {
     await api.post('/access-requests', { questionnaire: questionnaire.value, photo_path: photoPath.value });
     requestSent.value = true;
@@ -38,7 +47,7 @@ async function sendAccessRequest() {
 </script>
 
 <template>
-  <section v-if="auth.isTrainer" class="grid gap-5 lg:grid-cols-2">
+  <section v-if="auth.isTrainer" class="grid min-w-0 gap-5 lg:grid-cols-2">
 
     <article v-if="false" class="glass-panel rounded-[28px] p-5">
       <div class="mb-5 flex items-center justify-between">
@@ -58,35 +67,41 @@ async function sendAccessRequest() {
       </div>
     </article>
 
-    <article class="glass-panel rounded-[28px] p-5">
-      <div class="mb-5 flex items-center justify-between">
-        <div>
+    <article class="glass-panel min-w-0 overflow-hidden rounded-[28px] p-4 sm:p-5">
+      <div class="mb-5 flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="min-w-0">
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">сопровождение</p>
           <h2 class="mt-1 text-2xl font-extrabold">Клиенты</h2>
         </div>
-        <RouterLink to="/participants" class="rounded-2xl bg-primary px-4 py-2 text-sm font-extrabold text-[#470382]">Открыть</RouterLink>
+        <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end sm:gap-3">
+          <span class="whitespace-nowrap rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-sm font-extrabold text-primary">{{ dashboard.clients_count }} участниц</span>
+          <RouterLink to="/participants" class="rounded-2xl bg-primary px-4 py-2 text-sm font-extrabold text-[#470382]">Открыть</RouterLink>
+        </div>
       </div>
-      <div class="dashboard-scroll grid max-h-[500px] gap-3 overflow-y-auto pr-2">
-        <article v-for="client in dashboard.clients_list" :key="client.id" class="rounded-2xl border border-white/10 bg-surface-container p-4">
-          <div class="flex items-center gap-3">
-            <div class="grid h-11 w-11 place-items-center rounded-full bg-primary/15 text-primary">
+      <div class="dashboard-scroll grid min-w-0 max-h-[500px] gap-3 overflow-x-hidden overflow-y-auto pr-1 sm:pr-2 lg:max-h-[460px]">
+        <article v-for="client in dashboard.clients" :key="client.id" class="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-surface-container p-3 sm:p-4">
+          <div class="flex min-w-0 items-center gap-3">
+            <div v-if="client.avatar_path" class="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-primary/30 bg-surface-high">
+              <img class="h-full w-full object-cover" :src="avatarUrl(client.avatar_path)" :alt="`Аватар ${client.name}`" />
+            </div>
+            <div v-else class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-primary/15 text-primary">
               <span class="material-symbols-outlined">person</span>
             </div>
-            <div>
-              <strong class="block">{{ client.name }}</strong>
-              <span class="text-sm text-on-muted">{{ client.goal }}</span>
+            <div class="min-w-0 flex-1">
+              <strong class="block break-words">{{ client.name }}</strong>
+              <span class="mt-1 block break-words text-sm leading-5 text-on-muted">{{ client.client_profile?.goal ?? 'Цель не указана' }}</span>
             </div>
           </div>
         </article>
       </div>
     </article>
 
-    <article class="glass-panel rounded-[28px] p-5">
+    <article class="glass-panel min-w-0 overflow-hidden rounded-[28px] p-4 sm:p-5">
       <div class="mb-5 flex items-center justify-between">
         <h2 class="text-2xl font-extrabold">Очередь отчетов</h2>
         <span class="material-symbols-outlined text-primary">assignment</span>
       </div>
-      <div v-if="dashboard.report_queue.length" class="dashboard-scroll grid max-h-[500px] gap-3 overflow-y-auto pr-2">
+      <div v-if="dashboard.report_queue.length" class="dashboard-scroll grid min-w-0 max-h-[500px] gap-3 overflow-x-hidden overflow-y-auto pr-1 sm:pr-2 lg:max-h-[460px]">
         <RouterLink v-for="report in dashboard.report_queue" :key="report.client_id" :to="{ path: '/participants', query: { client: report.client_id } }" class="rounded-2xl border border-white/10 bg-surface-container p-4 transition hover:border-primary/40 hover:bg-primary/10">
           <div class="flex items-center justify-between gap-3"><strong>{{ report.client_name }}</strong><span class="text-xs font-bold uppercase text-primary">Открыть отчёт</span></div>
           <p class="mt-2 text-sm leading-6 text-on-muted">Замер от {{ new Date(report.measured_on).toLocaleDateString('ru-RU') }} · вес {{ report.weight_kg }} кг<span v-if="report.waist_cm != null"> · талия {{ report.waist_cm }} см</span>.</p>
@@ -196,7 +211,7 @@ async function sendAccessRequest() {
         </div>
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Личный кабинет</p>
-          <h2 class="mt-2 max-w-3xl text-2xl font-extrabold leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от Анастасии Лазаревой</h2>
+          <h2 class="mt-2 max-w-3xl text-[17px] font-extrabold leading-6 sm:text-2xl sm:leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от <span class="text-primary">Анастасии Лазаревой</span></h2>
         </div>
       </div>
     </article>
@@ -242,7 +257,7 @@ async function sendAccessRequest() {
         </div>
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Личный кабинет</p>
-          <h2 class="mt-2 max-w-3xl text-2xl font-extrabold leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от Анастасии Лазаревой</h2>
+          <h2 class="mt-2 max-w-3xl text-[17px] font-extrabold leading-6 sm:text-2xl sm:leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от <span class="text-primary">Анастасии Лазаревой</span></h2>
         </div>
       </div>
     </article>

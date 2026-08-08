@@ -106,8 +106,8 @@ async function createMaterial() {
     </div>
 
     <Teleport to="body">
-      <div v-if="showMaterialModal" class="fixed inset-0 z-[100] grid place-items-center bg-black/60 p-5 backdrop-blur-sm">
-        <form class="glass-panel w-full max-w-xl rounded-[28px] p-5" @submit.prevent="createMaterial">
+      <div v-if="showMaterialModal" class="app-modal-backdrop z-[100] bg-black/60 backdrop-blur-sm">
+        <form class="app-modal-panel glass-panel max-w-xl rounded-[28px] p-5" @submit.prevent="createMaterial">
           <div class="mb-5 flex items-center justify-between">
             <h3 class="text-2xl font-extrabold">Добавить материал</h3>
             <button class="grid h-10 w-10 place-items-center rounded-2xl border border-white/10 text-on-muted" type="button" @click="showMaterialModal = false">

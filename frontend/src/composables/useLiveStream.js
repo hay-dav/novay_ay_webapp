@@ -4,7 +4,7 @@ import {
     RoomEvent,
     Track,
 } from 'livekit-client';
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
+import { computed, markRaw, nextTick, onBeforeUnmount, ref, shallowRef } from 'vue';
 import { api } from '@/services/api';
 
 const roomOptions = {
@@ -30,9 +30,14 @@ export function useLiveStream() {
     const cameraFacingMode = ref('user');
     const cameraSwitching = ref(false);
     const viewerCount = ref(0);
+    const viewerNames = ref([]);
+    const viewerParticipants = ref([]);
     const localVideo = ref(null);
     const remoteVideo = ref(null);
-    const liveKitRoom = ref(null);
+    const conferenceParticipants = ref([]);
+    // LiveKit instances contain browser media objects. They must not be made
+    // reactive: Vue proxies make their device constraints non-cloneable on iOS.
+    const liveKitRoom = shallowRef(null);
     const isHosting = computed(() => Boolean(
         activeStream.value
         && liveKitRoom.value?.state === ConnectionState.Connected
@@ -40,15 +45,41 @@ export function useLiveStream() {
     ));
 
     const remoteAudioElements = new Set();
+    const participantVideoElements = new Map();
     let mediaRecorder = null;
-    let recordingChunks = [];
+    let recordingStream = null;
+    let recordingStreamId = null;
+    let recordingMimeType = '';
+    let recordingSegmentTimer = null;
+    let recordingSegmentIndex = 0;
+    let recordingSegmentDone = Promise.resolve();
+    let recordingSegmentUploads = [];
+    let recordingFinalizing = false;
     let recordingStartedAt = 0;
+    let recordingCanvas = null;
+    let recordingContext = null;
+    let recordingPreview = null;
+    let recordingWatermarkImage = null;
+    let recordingCanvasTrack = null;
+    let recordingFrameId = null;
+    let recordingAudioContext = null;
+    let recordingAudioDestination = null;
+    const recordingAudioSources = new Map();
     let activeTimer;
     let hostSession = false;
+    let viewerReconnectInProgress = false;
 
     async function refreshActive() {
         const { data } = await api.get('/live-streams/active');
+        const previousConferenceState = activeStream.value?.participants_enabled;
         activeStream.value = data.data;
+        if (!hostSession
+            && liveKitRoom.value
+            && liveModalOpen.value
+            && previousConferenceState !== undefined
+            && previousConferenceState !== activeStream.value?.participants_enabled) {
+            await reconnectViewerForConference();
+        }
         if (!activeStream.value && liveModalOpen.value && !hostSession) {
             closeLiveModal();
             liveError.value = 'Прямой эфир завершен.';
@@ -71,8 +102,30 @@ export function useLiveStream() {
 
     function createRoom() {
         const room = new Room(roomOptions);
-        room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => attachRemoteTrack(track, participant));
-        room.on(RoomEvent.TrackUnsubscribed, detachRemoteTrack);
+        room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+            attachRemoteTrack(track, participant);
+            updateViewerCount();
+        });
+        room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+            detachRemoteTrack(track, participant);
+            updateViewerCount();
+        });
+        room.on(RoomEvent.TrackMuted, (publication, participant) => {
+            if (publication.source === Track.Source.Camera && participant && !isHostParticipant(participant))
+                removeConferenceParticipant(participant.identity, publication.track);
+            updateViewerCount();
+        });
+        room.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+            if (publication.source === Track.Source.Camera && publication.track && participant && !isHostParticipant(participant))
+                attachRemoteTrack(publication.track, participant);
+            updateViewerCount();
+        });
+        room.on(RoomEvent.TrackPublished, updateViewerCount);
+        room.on(RoomEvent.TrackUnpublished, updateViewerCount);
+        room.on(RoomEvent.LocalTrackPublished, updateViewerCount);
+        room.on(RoomEvent.LocalTrackUnpublished, updateViewerCount);
+        room.on(RoomEvent.ParticipantNameChanged, updateViewerCount);
+        room.on(RoomEvent.ParticipantMetadataChanged, updateViewerCount);
         room.on(RoomEvent.ParticipantConnected, updateViewerCount);
         room.on(RoomEvent.ParticipantDisconnected, updateViewerCount);
         room.on(RoomEvent.ConnectionStateChanged, (state) => {
@@ -94,7 +147,7 @@ export function useLiveStream() {
         room.on(RoomEvent.MediaDevicesError, () => {
             liveError.value = 'Камера или микрофон недоступны. Проверьте разрешения браузера.';
         });
-        liveKitRoom.value = room;
+        liveKitRoom.value = markRaw(room);
         return room;
     }
 
@@ -109,18 +162,19 @@ export function useLiveStream() {
         return url.replace(/^(wss?):\/\/(?:localhost|127\.0\.0\.1)(?=[:/]|$)/, (_, protocol) => `${protocol}://${window.location.hostname}`);
     }
 
-    async function startBroadcast() {
+    async function startBroadcast(recordingDetails = {}) {
         liveLoading.value = true;
         liveError.value = '';
         hostSession = true;
         try {
             if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
                 throw new DOMException('Media devices unavailable', 'SecurityError');
-            if (typeof MediaRecorder === 'undefined')
-                throw new DOMException('Recording unavailable', 'NotSupportedError');
-
-            const { data } = await api.post('/live-streams/start');
+            const { data } = await api.post('/live-streams/start', recordingDetails);
             activeStream.value = data.data;
+            if (recordingDetails.title && data.data?.recording_title !== recordingDetails.title)
+                throw new Error('Сервер не подтвердил сохранение названия записи.');
+            if (recordingDetails.description && data.data?.recording_description !== recordingDetails.description)
+                throw new Error('Сервер не подтвердил сохранение описания записи.');
             const connection = await getConnection(activeStream.value);
             const room = createRoom();
             connectionState.value = 'connecting';
@@ -137,12 +191,17 @@ export function useLiveStream() {
                 ?.getSettings()
                 ?.facingMode ?? 'user';
 
+            // Start server recording only after LiveKit confirms that the
+            // trainer's camera and microphone tracks have been published.
+            const recordingResponse = await api.post(`/live-streams/${activeStream.value.id}/recording/start`);
+            activeStream.value = recordingResponse.data.data;
+
             liveModalOpen.value = true;
             await nextTick();
             attachLocalCamera();
-            startRecording();
             await sendHostHeartbeat();
             updateViewerCount();
+            return true;
         }
         catch (error) {
             if (activeStream.value)
@@ -159,10 +218,28 @@ export function useLiveStream() {
             };
             liveError.value = messages[error.name]
                 ?? error.response?.data?.message
+                ?? error.message
                 ?? 'Не удалось запустить трансляцию.';
+            return false;
         }
         finally {
             liveLoading.value = false;
+        }
+    }
+
+    async function reconnectViewerForConference() {
+        if (viewerReconnectInProgress || hostSession || !activeStream.value)
+            return;
+        viewerReconnectInProgress = true;
+        try {
+            // LiveKit publication permission is encoded in the join token.
+            // Rejoin when the host changes conference mode so already connected
+            // participants receive a fresh token immediately.
+            disconnectRoom();
+            await watchBroadcast();
+        }
+        finally {
+            viewerReconnectInProgress = false;
         }
     }
 
@@ -206,7 +283,42 @@ export function useLiveStream() {
             .getTrackPublication(Track.Source.Camera)
             ?.videoTrack;
         if (cameraTrack && localVideo.value)
-            cameraTrack.attach(localVideo.value);
+            attachVideoTrack(cameraTrack, localVideo.value);
+    }
+
+    function attachHostVideo() {
+        const host = [...(liveKitRoom.value?.remoteParticipants.values() ?? [])]
+            .find((participant) => isHostParticipant(participant));
+        const hostTrack = host
+            ?.getTrackPublication(Track.Source.Camera)
+            ?.videoTrack;
+        if (hostTrack && remoteVideo.value)
+            attachVideoTrack(hostTrack, remoteVideo.value);
+    }
+
+    function attachVideoTrack(track, element) {
+        if (!track || !element)
+            return;
+        const mediaStreamTrackId = track.mediaStreamTrack?.id;
+        const alreadyAttached = Boolean(mediaStreamTrackId
+            && element.srcObject?.getVideoTracks?.()
+                .some((mediaTrack) => mediaTrack.id === mediaStreamTrackId));
+        // A track may be rendered in the stage and a thumbnail at the same
+        // time. Globally detaching it here races Vue's conditional rendering
+        // on iOS and can leave the stage black.
+        // Vue function refs run again after reactive updates. Keep the existing
+        // MediaStream attached when it already contains this LiveKit track;
+        // replacing srcObject here produces a visible flash on every poll.
+        if (!alreadyAttached && element.srcObject)
+            element.srcObject = null;
+        element.muted = true;
+        element.autoplay = true;
+        element.playsInline = true;
+        if (!alreadyAttached)
+            track.attach(element);
+        element.play().catch(() => {
+            window.requestAnimationFrame(() => element.play().catch(() => undefined));
+        });
     }
 
     function attachExistingRemoteTracks(room) {
@@ -219,23 +331,23 @@ export function useLiveStream() {
     }
 
     function attachRemoteTrack(track, participant) {
-        if (!isHostParticipant(participant))
-            return;
-        if (track.kind === Track.Kind.Video && remoteVideo.value) {
-            const element = remoteVideo.value;
-            element.muted = true;
-            element.autoplay = true;
-            element.playsInline = true;
-            track.attach(element);
-            element.play().catch(() => {
-                // A remote video track contains no audio in this UI. Keep it muted
-                // and retry on the next frame so browser autoplay policies cannot
-                // leave a subscribed stream silently paused.
-                window.requestAnimationFrame(() => element.play().catch(() => undefined));
-            });
+        if (track.kind === Track.Kind.Video) {
+            if (isHostParticipant(participant)) {
+                nextTick(attachHostVideo);
+            } else {
+                const entry = { identity: participant.identity, name: participant.name || 'Участник', track: markRaw(track) };
+                const index = conferenceParticipants.value.findIndex((item) => item.identity === participant.identity);
+                if (index === -1)
+                    conferenceParticipants.value.push(entry);
+                else
+                    conferenceParticipants.value[index] = entry;
+                nextTick(() => attachParticipantVideo(participant.identity, participantVideoElements.get(participant.identity)));
+                enforceParticipantCameraLimit();
+            }
             return;
         }
         if (track.kind === Track.Kind.Audio) {
+            addRemoteAudioToRecording(track);
             const element = track.attach();
             element.autoplay = true;
             element.style.display = 'none';
@@ -251,15 +363,88 @@ export function useLiveStream() {
         }
     }
 
+    function attachParticipantVideo(identity, element) {
+        const participantIdentity = String(identity);
+        const previousElement = participantVideoElements.get(participantIdentity);
+        if (!element) {
+            // Vue may deliver ref(null) for the old thumbnail after the new
+            // stage element has already been registered. Never detach that
+            // newer, connected element: doing so leaves the mobile stage black.
+            if (previousElement && !previousElement.isConnected) {
+                const participant = conferenceParticipants.value
+                    .find((item) => item.identity === participantIdentity);
+                participant?.track?.detach(previousElement);
+                previousElement.srcObject = null;
+                participantVideoElements.delete(participantIdentity);
+            }
+            return;
+        }
+        if (previousElement && previousElement !== element) {
+            const participant = conferenceParticipants.value
+                .find((item) => item.identity === participantIdentity);
+            participant?.track?.detach(previousElement);
+            previousElement.srcObject = null;
+        }
+        participantVideoElements.set(participantIdentity, element);
+        const participant = conferenceParticipants.value
+            .find((item) => item.identity === participantIdentity);
+        if (!participant)
+            return;
+        attachVideoTrack(participant.track, element);
+    }
+
+    function setLocalVideoElement(element) {
+        if (!element) {
+            if (localVideo.value && !localVideo.value.isConnected)
+                localVideo.value = null;
+            return;
+        }
+        if (localVideo.value === element)
+            return;
+        localVideo.value = element;
+        attachLocalCamera();
+    }
+
+    function setRemoteVideoElement(element) {
+        if (!element) {
+            if (remoteVideo.value && !remoteVideo.value.isConnected)
+                remoteVideo.value = null;
+            return;
+        }
+        if (remoteVideo.value === element)
+            return;
+        remoteVideo.value = element;
+        attachHostVideo();
+    }
+
     function isHostParticipant(participant) {
         const hostId = activeStream.value?.host?.id ?? activeStream.value?.host_id;
         return hostId !== undefined && String(participant?.identity) === String(hostId);
     }
 
-    function detachRemoteTrack(track) {
+    function removeConferenceParticipant(identity, track = null) {
+        const participantIdentity = String(identity);
+        const element = participantVideoElements.get(participantIdentity);
+        if (element) {
+            element.srcObject = null;
+            participantVideoElements.delete(participantIdentity);
+        }
+        conferenceParticipants.value = conferenceParticipants.value
+            .filter((item) => item.identity !== participantIdentity);
+        track?.detach().forEach((element) => {
+            element.srcObject = null;
+        });
+    }
+
+    function detachRemoteTrack(track, participant) {
+        removeRemoteAudioFromRecording(track);
+        if (track.kind === Track.Kind.Video && participant && !isHostParticipant(participant))
+            removeConferenceParticipant(participant.identity);
         track.detach().forEach((element) => {
             remoteAudioElements.delete(element);
-            element.remove();
+            element.srcObject = null;
+            if (track.kind === Track.Kind.Audio)
+                element.remove();
         });
     }
 
@@ -275,9 +460,14 @@ export function useLiveStream() {
         const participant = liveKitRoom.value?.localParticipant;
         if (!participant)
             return;
+        if (!hostSession && !activeStream.value?.participants_enabled) {
+            liveError.value = 'Администратор пока не включил видеоконференцию для участниц.';
+            return;
+        }
         try {
             await participant.setMicrophoneEnabled(!participant.isMicrophoneEnabled);
             microphoneEnabled.value = participant.isMicrophoneEnabled;
+            updateViewerCount();
         }
         catch (error) {
             liveError.value = error.message ?? 'Не удалось включить микрофон. Проверьте разрешение браузера.';
@@ -288,6 +478,14 @@ export function useLiveStream() {
         const participant = liveKitRoom.value?.localParticipant;
         if (!participant)
             return;
+        if (!hostSession && !activeStream.value?.participants_enabled) {
+            liveError.value = 'Администратор пока не включил видеоконференцию для участниц.';
+            return;
+        }
+        if (!hostSession && !participant.isCameraEnabled && conferenceParticipants.value.length >= 2) {
+            liveError.value = 'Одновременно камеры могут включить только две участницы.';
+            return;
+        }
 
         try {
             await participant.setCameraEnabled(!participant.isCameraEnabled);
@@ -301,7 +499,9 @@ export function useLiveStream() {
                     ?.mediaStreamTrack
                     ?.getSettings()
                     ?.facingMode ?? 'user';
+                enforceParticipantCameraLimit();
             }
+            updateViewerCount();
         }
         catch (error) {
             liveError.value = error.message ?? 'Не удалось включить камеру. Проверьте разрешение браузера.';
@@ -334,6 +534,7 @@ export function useLiveStream() {
                 frameRate: { ideal: 30, max: 30 },
             });
             cameraFacingMode.value = cameraTrack.mediaStreamTrack.getSettings().facingMode ?? nextFacingMode;
+            updateRecordingVideoSource(cameraTrack.mediaStreamTrack);
             attachLocalCamera();
         }
         catch {
@@ -344,82 +545,340 @@ export function useLiveStream() {
         }
     }
 
-    function updateViewerCount() {
-        viewerCount.value = liveKitRoom.value?.remoteParticipants.size ?? 0;
+    async function selectRecordingStage(identity = null) {
+        const participant = liveKitRoom.value?.localParticipant;
+        if (!hostSession || !participant)
+            return;
+        const payload = new TextEncoder().encode(JSON.stringify({
+            type: 'stage-selection',
+            identity: identity ? String(identity) : null,
+        }));
+        await participant.publishData(payload, {
+            reliable: true,
+            topic: 'stage-selection',
+        }).catch(() => undefined);
     }
 
-    function startRecording() {
+    function updateViewerCount() {
+        const room = liveKitRoom.value;
+        const participants = [...(room?.remoteParticipants.values() ?? [])]
+            .filter((participant) => !isHostParticipant(participant));
+        const localParticipant = room?.localParticipant;
+        const visibleParticipants = !hostSession && localParticipant
+            ? [localParticipant, ...participants]
+            : participants;
+
+        viewerCount.value = visibleParticipants.length;
+        viewerParticipants.value = visibleParticipants.map((participant) => {
+            const cameraPublication = participant.getTrackPublication(Track.Source.Camera);
+            const microphonePublication = participant.getTrackPublication(Track.Source.Microphone);
+            return {
+                identity: participant.identity,
+                name: participant.isLocal ? 'Вы' : (participant.name || participant.identity),
+                cameraEnabled: Boolean(cameraPublication?.track && !cameraPublication.isMuted),
+                microphoneEnabled: Boolean(microphonePublication?.track && !microphonePublication.isMuted),
+            };
+        });
+        viewerNames.value = viewerParticipants.value.map((participant) => participant.name);
+    }
+
+    function enforceParticipantCameraLimit() {
+        if (hostSession)
+            return;
+        const participant = liveKitRoom.value?.localParticipant;
+        if (!participant?.isCameraEnabled)
+            return;
+
+        const allowedIdentities = [
+            String(participant.identity),
+            ...conferenceParticipants.value.map((item) => String(item.identity)),
+        ].sort().slice(0, 2);
+
+        if (!allowedIdentities.includes(String(participant.identity))) {
+            participant.setCameraEnabled(false).then(() => {
+                cameraEnabled.value = false;
+                liveError.value = 'Лимит камер достигнут: одновременно могут быть видны только две участницы.';
+            }).catch(() => undefined);
+        }
+    }
+
+    function recordingTrackKey(track) {
+        return track?.sid ?? track?.mediaStreamTrack?.id;
+    }
+
+    function addAudioTrackToRecordingMix(mediaStreamTrack, key) {
+        if (!recordingAudioContext || !recordingAudioDestination || !mediaStreamTrack || !key || recordingAudioSources.has(key))
+            return;
+        const source = recordingAudioContext.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
+        source.connect(recordingAudioDestination);
+        recordingAudioSources.set(key, source);
+    }
+
+    function addRemoteAudioToRecording(track) {
+        if (!hostSession)
+            return;
+        addAudioTrackToRecordingMix(track.mediaStreamTrack, recordingTrackKey(track));
+    }
+
+    function removeRemoteAudioFromRecording(track) {
+        const key = recordingTrackKey(track);
+        const source = key ? recordingAudioSources.get(key) : null;
+        source?.disconnect();
+        if (key)
+            recordingAudioSources.delete(key);
+    }
+
+    function addExistingRemoteAudioToRecording() {
+        liveKitRoom.value?.remoteParticipants.forEach((participant) => {
+            participant.trackPublications.forEach((publication) => {
+                if (publication.track?.kind === Track.Kind.Audio)
+                    addRemoteAudioToRecording(publication.track);
+            });
+        });
+    }
+
+    async function startRecording() {
         const participant = liveKitRoom.value?.localParticipant;
         if (!participant)
             return;
-        const tracks = [
-            participant.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack,
-            participant.getTrackPublication(Track.Source.Microphone)?.audioTrack?.mediaStreamTrack,
-        ].filter(Boolean);
-        const stream = new MediaStream(tracks);
-        const mimeType = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
+        const cameraTrack = participant.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
+        const microphoneTrack = participant.getTrackPublication(Track.Source.Microphone)?.audioTrack?.mediaStreamTrack;
+        if (!cameraTrack)
+            throw new Error('Камера недоступна для записи эфира.');
+
+        recordingCanvas = document.createElement('canvas');
+        // Record every live stream in a stable horizontal 16:9 frame,
+        // independently of the camera orientation reported by mobile browsers.
+        recordingCanvas.width = 1280;
+        recordingCanvas.height = 720;
+        recordingContext = recordingCanvas.getContext('2d', { alpha: false });
+        if (!recordingContext || typeof recordingCanvas.captureStream !== 'function')
+            throw new Error('Браузер не поддерживает непрерывную запись при смене камеры.');
+
+        recordingPreview = document.createElement('video');
+        recordingPreview.autoplay = true;
+        recordingPreview.muted = true;
+        recordingPreview.playsInline = true;
+        updateRecordingVideoSource(cameraTrack);
+        await recordingPreview.play().catch(() => undefined);
+        recordingWatermarkImage = new Image();
+        recordingWatermarkImage.src = '/public-image/novaya-ya-logo-header.png';
+        if (typeof recordingWatermarkImage.decode === 'function')
+            await recordingWatermarkImage.decode().catch(() => undefined);
+
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        recordingAudioContext = AudioContextClass ? new AudioContextClass() : null;
+        recordingAudioDestination = recordingAudioContext?.createMediaStreamDestination() ?? null;
+        if (recordingAudioContext?.state === 'suspended')
+            await recordingAudioContext.resume().catch(() => undefined);
+        addAudioTrackToRecordingMix(microphoneTrack, 'host-microphone');
+        addExistingRemoteAudioToRecording();
+
+        const canvasStream = recordingCanvas.captureStream(30);
+        recordingCanvasTrack = canvasStream.getVideoTracks()[0] ?? null;
+        recordingStream = new MediaStream([
+            recordingCanvasTrack,
+            ...(recordingAudioDestination?.stream.getAudioTracks() ?? [microphoneTrack].filter(Boolean)),
+        ].filter(Boolean));
+        const appleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const mimeTypes = appleMobile
+            ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
+            : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4'];
+        recordingMimeType = mimeTypes
             .find((type) => MediaRecorder.isTypeSupported(type));
-        mediaRecorder = new MediaRecorder(stream, {
-            ...(mimeType ? { mimeType } : {}),
+        recordingSegmentIndex = 0;
+        recordingSegmentUploads = [];
+        recordingFinalizing = false;
+        recordingStreamId = activeStream.value?.id ?? null;
+        recordingStartedAt = Date.now();
+        startRecordingSegment();
+        drawRecordingFrame();
+    }
+
+    function startRecordingSegment() {
+        if (recordingFinalizing || !recordingStream)
+            return;
+
+        const chunks = [];
+        const recorder = new MediaRecorder(recordingStream, {
+            ...(recordingMimeType ? { mimeType: recordingMimeType } : {}),
             videoBitsPerSecond: 2_500_000,
             audioBitsPerSecond: 96_000,
         });
-        recordingChunks = [];
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size)
-                recordingChunks.push(event.data);
-        };
-        mediaRecorder.onerror = (event) => {
-            liveError.value = `Ошибка записи эфира: ${event.error?.message ?? 'запись остановлена браузером'}`;
-        };
-        recordingStartedAt = Date.now();
-        mediaRecorder.start(1000);
-    }
-
-    function stopRecording() {
-        return new Promise((resolve, reject) => {
-            const recorder = mediaRecorder;
-            if (!recorder) {
-                resolve(null);
-                return;
-            }
-            const finish = () => {
-                const blob = new Blob(recordingChunks, { type: recorder.mimeType || 'video/webm' });
-                mediaRecorder = null;
-                recordingChunks = [];
-                resolve(blob.size ? blob : null);
+        mediaRecorder = recorder;
+        recordingSegmentDone = new Promise((resolve) => {
+            let segmentFinished = false;
+            const finishSegment = () => {
+                if (segmentFinished)
+                    return;
+                segmentFinished = true;
+                window.clearTimeout(recordingSegmentTimer);
+                const blob = new Blob(chunks, { type: recorder.mimeType || recordingMimeType || 'video/webm' });
+                if (blob.size) {
+                    const sequence = recordingSegmentIndex;
+                    recordingSegmentIndex += 1;
+                    recordingSegmentUploads.push(uploadRecordingSegment(blob, sequence));
+                }
+                resolve();
+                if (!recordingFinalizing)
+                    startRecordingSegment();
             };
-            if (recorder.state === 'inactive') {
-                finish();
-                return;
-            }
-            recorder.addEventListener('stop', finish, { once: true });
-            recorder.addEventListener('error', (event) => reject(event.error ?? new Error('MediaRecorder error')), { once: true });
-            recorder.requestData();
-            recorder.stop();
+            recorder.ondataavailable = (event) => {
+                if (event.data.size)
+                    chunks.push(event.data);
+            };
+            recorder.onstop = finishSegment;
+            recorder.onerror = (event) => {
+                liveError.value = `Ошибка записи фрагмента эфира: ${event.error?.message ?? 'рекордер перезапущен'}`;
+                if (recorder.state !== 'inactive') {
+                    try {
+                        recorder.requestData();
+                        recorder.stop();
+                    }
+                    catch {
+                        finishSegment();
+                    }
+                }
+                else {
+                    window.setTimeout(finishSegment, 250);
+                }
+            };
         });
+        recorder.start(1000);
+        recordingSegmentTimer = window.setTimeout(() => {
+            if (recorder.state === 'recording') {
+                recorder.requestData();
+                recorder.stop();
+            }
+        }, 45_000);
     }
 
-    async function saveRecording(stream, recording, durationSeconds) {
+    function updateRecordingVideoSource(track) {
+        if (!recordingPreview || !track)
+            return;
+        recordingPreview.srcObject = new MediaStream([track]);
+        recordingPreview.play().catch(() => undefined);
+    }
+
+    function drawRecordingFrame() {
+        if (!recordingCanvas || !recordingContext || !recordingPreview)
+            return;
+        recordingContext.fillStyle = '#000';
+        recordingContext.fillRect(0, 0, recordingCanvas.width, recordingCanvas.height);
+        if (recordingPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            const sourceWidth = recordingPreview.videoWidth || recordingCanvas.width;
+            const sourceHeight = recordingPreview.videoHeight || recordingCanvas.height;
+            const scale = Math.min(
+                recordingCanvas.width / sourceWidth,
+                recordingCanvas.height / sourceHeight,
+            );
+            const width = sourceWidth * scale;
+            const height = sourceHeight * scale;
+            recordingContext.drawImage(
+                recordingPreview,
+                (recordingCanvas.width - width) / 2,
+                (recordingCanvas.height - height) / 2,
+                width,
+                height,
+            );
+        }
+        drawRecordingWatermark();
+        recordingFrameId = window.requestAnimationFrame(drawRecordingFrame);
+    }
+
+    function drawRecordingWatermark() {
+        if (!recordingContext || !recordingCanvas)
+            return;
+
+        const width = 250;
+        const height = 132;
+        const margin = 28;
+        const x = recordingCanvas.width - width - margin;
+        const y = recordingCanvas.height - height - margin;
+        recordingContext.save();
+        recordingContext.globalAlpha = 0.68;
+        recordingContext.fillStyle = '#fff';
+        recordingContext.fillRect(x - 10, y - 8, width + 20, height + 16);
+        if (recordingWatermarkImage?.complete && recordingWatermarkImage.naturalWidth) {
+            recordingContext.drawImage(recordingWatermarkImage, x, y, width, height);
+        }
+        else {
+            recordingContext.fillStyle = '#572369';
+            recordingContext.font = '700 18px sans-serif';
+            recordingContext.textAlign = 'center';
+            recordingContext.textBaseline = 'middle';
+            recordingContext.fillText('НОВАЯ Я · Курс Лазаревой', x + width / 2, y + height / 2);
+        }
+        recordingContext.restore();
+    }
+
+    function disposeRecordingPipeline() {
+        if (recordingFrameId !== null) {
+            window.cancelAnimationFrame(recordingFrameId);
+            recordingFrameId = null;
+        }
+        recordingCanvasTrack?.stop();
+        recordingCanvasTrack = null;
+        if (recordingPreview) {
+            recordingPreview.pause();
+            recordingPreview.srcObject = null;
+        }
+        recordingPreview = null;
+        recordingWatermarkImage = null;
+        recordingAudioSources.forEach((source) => source.disconnect());
+        recordingAudioSources.clear();
+        recordingAudioDestination = null;
+        recordingAudioContext?.close().catch(() => undefined);
+        recordingAudioContext = null;
+        recordingContext = null;
+        recordingCanvas = null;
+    }
+
+    async function uploadRecordingSegment(recording, sequence) {
         const form = new FormData();
         const extension = recording.type.includes('mp4') ? 'mp4' : 'webm';
-        form.append('video', recording, `live-${stream.id}.${extension}`);
-        form.append('duration_seconds', String(durationSeconds));
+        form.append('segment', recording, `segment-${String(sequence).padStart(6, '0')}.${extension}`);
+        form.append('sequence', String(sequence));
 
         let lastError;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
             try {
-                const { data } = await api.post(`/live-streams/${stream.id}/recording`, form);
-                return data.data;
+                await api.post(`/live-streams/${recordingStreamId}/recording-segments`, form);
+                return;
             }
             catch (error) {
                 lastError = error;
                 if (error.response?.status >= 400 && error.response?.status < 500)
                     throw error;
-                await new Promise((resolve) => window.setTimeout(resolve, 800));
+                await new Promise((resolve) => window.setTimeout(resolve, 1000 * (attempt + 1)));
             }
         }
         throw lastError;
+    }
+
+    async function stopRecordingAndFinalize(stream, durationSeconds) {
+        recordingFinalizing = true;
+        window.clearTimeout(recordingSegmentTimer);
+        const recorder = mediaRecorder;
+        if (recorder?.state === 'recording') {
+            recorder.requestData();
+            recorder.stop();
+        }
+        await recordingSegmentDone;
+        mediaRecorder = null;
+        await Promise.all(recordingSegmentUploads);
+        if (recordingSegmentIndex === 0)
+            throw new Error('Запись не содержит ни одного фрагмента.');
+
+        const { data } = await api.post(`/live-streams/${stream.id}/recording/finalize`, {
+            segment_count: recordingSegmentIndex,
+            duration_seconds: durationSeconds,
+        });
+        recordingStream = null;
+        recordingSegmentUploads = [];
+        disposeRecordingPipeline();
+
+        return data.data;
     }
 
     async function stopBroadcast() {
@@ -427,30 +886,37 @@ export function useLiveStream() {
         if (!stream)
             return null;
         recordingSaving.value = true;
-        let savedWorkout = null;
         try {
-            const recording = await stopRecording();
-            const durationSeconds = Math.max(1, Math.round((Date.now() - recordingStartedAt) / 1000));
-            if (!recording?.size)
-                throw new Error('Recording is empty');
-            savedWorkout = await saveRecording(stream, recording, durationSeconds);
+            // The server-side LiveKit Egress owns the recording. Ending the
+            // room must not wait for encoding, S3 upload, or watermarking.
+            await api.patch(`/live-streams/${stream.id}/end`);
+            return null;
         }
         catch (error) {
-            liveError.value = `Эфир завершён, но запись не удалось сохранить: ${error.response?.data?.message ?? error.message}`;
-            await api.patch(`/live-streams/${stream.id}/end`).catch(() => undefined);
+            liveError.value = error.response?.data?.message
+                ?? 'Не удалось завершить эфир. Проверьте подключение и повторите попытку.';
+            return null;
         }
         finally {
-            recordingSaving.value = false;
-            activeStream.value = null;
             hostSession = false;
+            activeStream.value = null;
             closeLiveModal();
+            recordingFinalizing = true;
+            window.clearTimeout(recordingSegmentTimer);
+            if (mediaRecorder?.state === 'recording')
+                mediaRecorder.stop();
+            recordingStream = null;
+            recordingStreamId = null;
+            disposeRecordingPipeline();
+            recordingSaving.value = false;
         }
-        return savedWorkout;
     }
 
     function disconnectRoom() {
         remoteAudioElements.forEach((element) => element.remove());
         remoteAudioElements.clear();
+        participantVideoElements.clear();
+        conferenceParticipants.value = [];
         if (localVideo.value)
             localVideo.value.srcObject = null;
         if (remoteVideo.value)
@@ -458,6 +924,8 @@ export function useLiveStream() {
         liveKitRoom.value?.disconnect();
         liveKitRoom.value = null;
         viewerCount.value = 0;
+        viewerNames.value = [];
+        viewerParticipants.value = [];
         connectionQuality.value = 'unknown';
         connectionState.value = 'idle';
         microphoneEnabled.value = false;
@@ -474,8 +942,12 @@ export function useLiveStream() {
         window.clearInterval(activeTimer);
         if (activeStream.value && hostSession)
             api.patch(`/live-streams/${activeStream.value.id}/end`).catch(() => undefined);
+        recordingFinalizing = true;
+        window.clearTimeout(recordingSegmentTimer);
         if (mediaRecorder?.state === 'recording')
             mediaRecorder.stop();
+        recordingStream = null;
+        disposeRecordingPipeline();
         disconnectRoom();
     });
 
@@ -494,8 +966,16 @@ export function useLiveStream() {
         cameraFacingMode,
         cameraSwitching,
         viewerCount,
+        viewerNames,
+        viewerParticipants,
         localVideo,
         remoteVideo,
+        conferenceParticipants,
+        attachLocalCamera,
+        attachHostVideo,
+        attachParticipantVideo,
+        setLocalVideoElement,
+        setRemoteVideoElement,
         startActivePolling,
         startBroadcast,
         stopBroadcast,
@@ -504,6 +984,7 @@ export function useLiveStream() {
         toggleMicrophone,
         toggleCamera,
         switchCamera,
+        selectRecordingStage,
         closeLiveModal,
     };
 }

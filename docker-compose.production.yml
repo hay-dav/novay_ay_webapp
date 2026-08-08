@@ -18,6 +18,8 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
+      livekit:
+        condition: service_started
     networks: [app]
 
   frontend:
@@ -51,7 +53,15 @@ services:
 
   queue:
     <<: *backend
-    command: php artisan queue:work --sleep=1 --tries=3 --timeout=600 --max-time=3600
+    command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=600 --max-time=3600
+    healthcheck:
+      disable: true
+
+  media:
+    <<: *backend
+    command: php artisan queue:work --queue=media --sleep=1 --tries=2 --timeout=1800 --max-time=3600
+    cpus: 2.0
+    mem_limit: 2g
     healthcheck:
       disable: true
 
@@ -69,6 +79,61 @@ services:
       SOKETI_DEFAULT_APP_KEY: ${PUSHER_APP_KEY}
       SOKETI_DEFAULT_APP_SECRET: ${PUSHER_APP_SECRET}
       SOKETI_METRICS_ENABLED: "false"
+    networks: [app]
+
+  livekit:
+    image: livekit/livekit-server:v1.13.1
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      # LiveKit and Egress must share the same Redis bus. Without it the
+      # StartRoomCompositeEgress request waits until the API returns 503.
+      REDIS_HOST: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./infra/livekit/livekit.production.yaml:/etc/livekit.yaml:ro
+    networks: [app]
+
+  # Browser recording is unreliable on iOS when the tab is backgrounded.
+  # Egress subscribes to the LiveKit room on the server and writes the
+  # composite recording directly to the private S3 bucket.
+  egress:
+    image: livekit/egress:v1.13
+    restart: unless-stopped
+    env_file: ./backend/.env.production
+    environment:
+      EGRESS_CONFIG_BODY: |
+        log_level: info
+        health_port: 8081
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://livekit:7880
+        insecure: true
+        redis:
+          address: redis:6379
+          password: ${REDIS_PASSWORD}
+        cpu_cost:
+          room_composite_cpu_cost: 3.0
+        session_limits:
+          file_output_max_duration: 4h
+    cap_add:
+      - SYS_ADMIN
+    # RoomComposite requires four CPU credits in Egress v1.13. This is a
+    # runtime ceiling rather than a reservation; only one recording is active.
+    cpus: 4.0
+    mem_limit: 4g
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
     networks: [app]
 
   postgres:

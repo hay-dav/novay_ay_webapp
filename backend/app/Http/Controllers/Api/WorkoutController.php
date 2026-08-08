@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Jobs\OptimizeStoredMedia;
 use App\Models\Notification;
 use App\Models\LiveStream;
 use App\Models\User;
@@ -10,6 +11,7 @@ use App\Models\WorkoutCompletion;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
@@ -46,6 +48,13 @@ class WorkoutController extends Controller
                     ['workout' => $workout->id, 'user' => $request->user()->id],
                 ));
             }
+            if ($workout->mobile_video_path) {
+                $workout->setAttribute('mobile_video_path', URL::temporarySignedRoute(
+                    'workouts.stream',
+                    now()->addHours(6),
+                    ['workout' => $workout->id, 'user' => $request->user()->id, 'variant' => 'mobile'],
+                ));
+            }
             if ($canDownloadLiveRecordings && $recordingWorkoutIds->has($workout->id)) {
                 $workout->setAttribute('download_url', URL::temporarySignedRoute(
                     'workouts.download',
@@ -75,7 +84,7 @@ class WorkoutController extends Controller
             'title' => ['required', 'string', 'max:255'],
             'description' => ['required', 'string'],
             'cover' => ['nullable', 'image', 'max:10240'],
-            'video' => ['required', 'file', 'mimetypes:video/mp4,video/webm,video/quicktime,video/x-m4v', 'max:512000'],
+            'video' => ['required', 'file', 'mimetypes:video/mp4,video/webm,video/quicktime,video/x-m4v', 'max:2097152'],
             'access_level' => ['required', 'in:free,paid'],
         ]);
 
@@ -94,6 +103,10 @@ class WorkoutController extends Controller
             'timer_seconds' => 45,
             'access_level' => $validated['access_level'],
         ]);
+        if ($coverPath) {
+            OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'cover_path', $coverPath, 'image', true);
+        }
+        OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
 
         User::query()
             ->where('role', 'client')
@@ -116,6 +129,7 @@ class WorkoutController extends Controller
         $media = app(MediaStorage::class);
         $media->delete($workout->cover_path);
         $media->delete($workout->video_path);
+        $media->delete($workout->mobile_video_path);
         $workout->delete();
 
         return response()->noContent();
@@ -153,11 +167,15 @@ class WorkoutController extends Controller
             abort_if($workout->access_level === 'paid' && $user->access_status !== 'paid', 403);
         }
 
-        if (Str::startsWith((string) $workout->video_path, ['http://', 'https://'])) {
-            return redirect()->away($workout->video_path);
+        $videoPath = $request->query('variant') === 'mobile' && $workout->mobile_video_path
+            ? $workout->mobile_video_path
+            : $workout->video_path;
+
+        if (Str::startsWith((string) $videoPath, ['http://', 'https://'])) {
+            return redirect()->away($videoPath);
         }
 
-        return redirect()->away(app(MediaStorage::class)->secureCdnUrl($workout->video_path, 3600));
+        return redirect()->away(app(MediaStorage::class)->secureCdnUrl($videoPath, 3600));
     }
 
     public function download(Request $request, Workout $workout)
@@ -166,6 +184,16 @@ class WorkoutController extends Controller
         abort_unless(in_array($user->role->value, ['admin', 'curator'], true), 403);
         abort_unless(LiveStream::query()->where('recording_workout_id', $workout->id)->exists(), 404);
 
-        return redirect()->away(app(MediaStorage::class)->secureCdnUrl($workout->video_path, 900));
+        if (Str::startsWith((string) $workout->video_path, ['http://', 'https://'])) {
+            return redirect()->away($workout->video_path);
+        }
+
+        $filename = (Str::slug($workout->title) ?: 'live-recording').'.mp4';
+        $downloadUrl = Storage::disk('s3')->temporaryUrl($workout->video_path, now()->addMinutes(15), [
+            'ResponseContentDisposition' => 'attachment; filename="'.$filename.'"',
+            'ResponseContentType' => 'video/mp4',
+        ]);
+
+        return redirect()->away($downloadUrl);
     }
 }

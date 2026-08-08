@@ -12,4 +12,12 @@ export default defineConfig({
     server: {
         port: 5173,
     },
+    build: {
+        rollupOptions: {
+            input: {
+                app: fileURLToPath(new URL('./index.html', import.meta.url)),
+                egress: fileURLToPath(new URL('./egress.html', import.meta.url)),
+            },
+        },
+    },
 });

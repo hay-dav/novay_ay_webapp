@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\LiveStreamController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\NutritionPlanController;
 use App\Http\Controllers\Api\ProgressController;
+use App\Http\Controllers\Api\PushSubscriptionController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\PodcastController;
 use App\Http\Controllers\Api\RecipeController;
@@ -23,6 +24,8 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->group(function (): void {
     Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
+    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
+    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
     Route::get('/workouts/{workout}/stream', [WorkoutController::class, 'stream'])
         ->middleware('signed')
         ->name('workouts.stream');
@@ -32,11 +35,15 @@ Route::prefix('v1')->group(function (): void {
     Route::get('/podcasts/{podcast}/stream', [PodcastController::class, 'stream'])
         ->middleware('signed')
         ->name('podcasts.stream');
+    Route::get('/live-guests/{token}', [LiveStreamController::class, 'guestInfo'])->middleware('throttle:60,1');
+    Route::post('/live-guests/{token}/join', [LiveStreamController::class, 'guestJoin'])->middleware('throttle:30,1');
+    Route::post('/live-guests/{token}/token', [LiveStreamController::class, 'guestToken'])->middleware('throttle:30,1');
 
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/auth/me', [AuthController::class, 'me']);
         Route::post('/auth/logout', [AuthController::class, 'logout']);
         Route::post('/auth/avatar', [AuthController::class, 'updateAvatar']);
+        Route::patch('/auth/password', [AuthController::class, 'changePassword'])->middleware('throttle:5,1');
 
         Route::get('/article-lessons', [ArticleLessonController::class, 'index']);
         Route::post('/article-lessons', [ArticleLessonController::class, 'store']);
@@ -73,17 +80,28 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/workouts/{workout}/complete', [WorkoutController::class, 'complete']);
         Route::get('/live-streams/active', [LiveStreamController::class, 'active']);
         Route::post('/live-streams/start', [LiveStreamController::class, 'start']);
+        Route::post('/live-streams/{stream}/recording/start', [LiveStreamController::class, 'startRecording']);
         Route::patch('/live-streams/{stream}/end', [LiveStreamController::class, 'end']);
         Route::post('/live-streams/{stream}/heartbeat', [LiveStreamController::class, 'heartbeat']);
         Route::post('/live-streams/{stream}/recording', [LiveStreamController::class, 'storeRecording']);
+        Route::post('/live-streams/{stream}/recording-segments', [LiveStreamController::class, 'storeRecordingSegment']);
+        Route::post('/live-streams/{stream}/recording/finalize', [LiveStreamController::class, 'finalizeRecording']);
         Route::post('/live-streams/{stream}/token', [LiveStreamController::class, 'token']);
+        Route::post('/live-streams/{stream}/guest-link', [LiveStreamController::class, 'createGuestLink']);
+        Route::delete('/live-streams/{stream}/guest-link', [LiveStreamController::class, 'disableGuestLink']);
+        Route::patch('/live-streams/{stream}/conference', [LiveStreamController::class, 'setConference']);
         Route::get('/live-streams/{stream}/viewers', [LiveStreamController::class, 'viewers']);
         Route::post('/progress', [ProgressController::class, 'store']);
         Route::get('/progress', [ProgressController::class, 'index']);
         Route::get('/notifications', [NotificationController::class, 'index']);
+        Route::get('/push-subscriptions/public-key', [PushSubscriptionController::class, 'publicKey']);
+        Route::post('/push-subscriptions', [PushSubscriptionController::class, 'store']);
+        Route::delete('/push-subscriptions', [PushSubscriptionController::class, 'destroy']);
         Route::get('/chat/messages', [ChatController::class, 'index']);
         Route::post('/chat/messages', [ChatController::class, 'store']);
         Route::get('/chat/peers', [ChatController::class, 'peers']);
+        Route::get('/chat/unread-count', [ChatController::class, 'unreadCount']);
+        Route::get('/chat/conversations', [ChatController::class, 'conversations']);
         Route::get('/access-requests', [AccessRequestController::class, 'index']);
         Route::post('/access-requests', [AccessRequestController::class, 'store']);
         Route::patch('/access-requests/{accessRequest}/approve', [AccessRequestController::class, 'approve']);

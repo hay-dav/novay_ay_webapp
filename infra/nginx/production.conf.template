@@ -25,10 +25,21 @@ server {
     server_name ${API_DOMAIN};
     root /var/www/html/public;
     index index.php;
-    client_max_body_size 520m;
-    ssl_certificate /etc/letsencrypt/live/app.lazareva-secret.ru/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/app.lazareva-secret.ru/privkey.pem;
+    client_max_body_size 2056m;
+    # The default 60-second body timeout is too short for large videos on a
+    # mobile connection: Nginx would terminate the request before PHP sees it.
+    client_body_timeout 30m;
+    send_timeout 30m;
+    ssl_certificate /etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem;
     include /etc/nginx/snippets/security.conf;
+
+    location /rtc {
+        proxy_pass http://livekit:7880;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
 
     location ~ ^/(app|apps)/ {
         proxy_pass http://soketi:6001;
@@ -48,7 +59,9 @@ server {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param HTTP_PROXY "";
-        fastcgi_read_timeout 600s;
+        fastcgi_connect_timeout 60s;
+        fastcgi_send_timeout 30m;
+        fastcgi_read_timeout 30m;
     }
 
     location ~ /\.(?!well-known).* { deny all; }

@@ -5,10 +5,10 @@ RUN composer install --no-dev --no-interaction --no-progress --prefer-dist --opt
 COPY . .
 RUN BROADCAST_CONNECTION=log composer dump-autoload --no-dev --classmap-authoritative --no-interaction
 
-FROM php:8.3-fpm-alpine
-RUN apk add --no-cache icu-libs libzip libpq ffmpeg \
-    && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev postgresql-dev \
-    && docker-php-ext-install intl pdo_pgsql zip bcmath opcache \
+FROM php:8.4-fpm-alpine
+RUN apk add --no-cache icu-libs libzip libpq libcurl oniguruma ffmpeg fontconfig ttf-dejavu imagemagick libheif \
+    && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev postgresql-dev curl-dev oniguruma-dev \
+    && docker-php-ext-install intl pdo_pgsql zip bcmath opcache curl mbstring \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && apk del .build-deps
@@ -17,7 +17,7 @@ COPY docker/www.conf /usr/local/etc/php-fpm.d/zz-app.conf
 COPY docker/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 WORKDIR /var/www/html
 COPY --from=vendor --chown=www-data:www-data /app .
-RUN mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache \
+RUN mkdir -p resources/views storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache
 USER www-data
 CMD ["php-fpm"]

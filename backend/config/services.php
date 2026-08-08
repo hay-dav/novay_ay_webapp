@@ -23,5 +23,8 @@ return [
         'api_key' => env('LIVEKIT_API_KEY'),
         'api_secret' => env('LIVEKIT_API_SECRET'),
         'public_url' => env('LIVEKIT_PUBLIC_URL', 'ws://localhost:7880'),
+        // Internal HTTP endpoint used by Laravel to manage rooms and Egress.
+        // This must remain on the private Docker network, not the public URL.
+        'internal_url' => env('LIVEKIT_INTERNAL_URL', 'http://livekit:7880'),
     ],
 ];

@@ -23,7 +23,7 @@ return new class extends Migration
             ]);
         });
 
-        DB::statement('DROP INDEX IF EXISTS users_email_unique');
+        DB::statement('ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_unique');
         DB::statement('CREATE UNIQUE INDEX IF NOT EXISTS users_email_hash_unique ON users (email_hash)');
         DB::statement('CREATE UNIQUE INDEX IF NOT EXISTS users_phone_hash_unique ON users (phone_hash) WHERE phone_hash IS NOT NULL');
         DB::statement('ALTER TABLE users ALTER COLUMN email_hash SET NOT NULL');
