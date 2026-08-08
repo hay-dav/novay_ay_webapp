@@ -1,6 +1,7 @@
 {
   "name": "novaya-ya/backend",
   "type": "project",
+  "license": "proprietary",
   "description": "API backend for Novaya Ya fitness and nutrition platform.",
   "require": {
     "php": "^8.3",
