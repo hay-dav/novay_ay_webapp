@@ -42,7 +42,9 @@ class MediaStorage
         $stored = Storage::disk('s3')->put($path, $stream, [
             'visibility' => $public ? 'public' : 'private',
             'ContentType' => $contentType,
-            'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'private, no-store',
+            // Objects remain private in S3. Signed CDN URLs keep access protected,
+            // while s-maxage lets the shared edge cache serve repeat views for an hour.
+            'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'public, max-age=0, s-maxage=3600, must-revalidate',
         ]);
         fclose($stream);
 
@@ -83,5 +85,21 @@ class MediaStorage
         $signature = rtrim(strtr(base64_encode(md5($secret.$resourcePath.($ip ?? '').$expires, true)), '+/', '-_'), '=');
 
         return $base.'/md5('.$signature.','.$expires.')'.$resourcePath;
+    }
+
+    public function secureCdnDownloadUrl(string $path, string $filename, int $ttlSeconds = 3600): string
+    {
+        $base = rtrim((string) config('filesystems.cdn_url'), '/');
+        $secret = (string) config('filesystems.cdn_secure_token');
+        if ($base === '' || $secret === '') {
+            return Storage::disk('s3')->temporaryUrl($path, now()->addSeconds($ttlSeconds), [
+                'ResponseContentDisposition' => 'attachment; filename="'.$filename.'"',
+                'ResponseContentType' => 'video/mp4',
+            ]);
+        }
+
+        return $this->secureCdnUrl($path, $ttlSeconds)
+            .'?response-content-disposition='.rawurlencode('attachment; filename="'.$filename.'"')
+            .'&response-content-type=video%2Fmp4';
     }
 }

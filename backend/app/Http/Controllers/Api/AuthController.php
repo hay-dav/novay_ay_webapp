@@ -19,8 +19,9 @@ class AuthController extends Controller
     public function register(Request $request)
     {
         $validated = $request->validate([
-            'first_name' => ['required', 'string', 'max:100'],
-            'last_name' => ['required', 'string', 'max:100'],
+            'name' => ['nullable', 'string', 'max:255', 'required_without:first_name'],
+            'first_name' => ['nullable', 'string', 'max:100', 'required_without:name'],
+            'last_name' => ['nullable', 'string', 'max:100'],
             'email' => ['nullable', 'email', 'required_without:phone'],
             'phone' => ['nullable', 'string', 'max:32', 'required_without:email'],
             'goal' => ['nullable', 'string', 'max:1000'],
@@ -37,10 +38,15 @@ class AuthController extends Controller
         }
 
         $goal = $validated['goal'] ?? null;
-        unset($validated['goal'], $validated['privacy_policy_accepted']);
-        $validated['first_name'] = trim($validated['first_name']);
-        $validated['last_name'] = trim($validated['last_name']);
-        $validated['name'] = $validated['last_name'].' '.$validated['first_name'];
+        $validated['name'] = filled($validated['first_name'] ?? null)
+            ? trim($validated['first_name'].' '.($validated['last_name'] ?? ''))
+            : trim($validated['name']);
+        unset(
+            $validated['first_name'],
+            $validated['last_name'],
+            $validated['goal'],
+            $validated['privacy_policy_accepted'],
+        );
         $validated['role'] = 'client';
         $validated['access_status'] = 'free';
         $validated['privacy_policy_accepted_at'] = now();
@@ -96,8 +102,11 @@ class AuthController extends Controller
         $email = Str::lower(trim($validated['email']));
         $emailHash = User::lookupHash($email);
         $user = User::query()->where('email_hash', $emailHash)->first();
+        $existingReset = DB::table('password_reset_tokens')->where('email_hash', $emailHash)->first();
+        $canIssueNewToken = ! $existingReset
+            || now()->diffInSeconds($existingReset->created_at, true) >= 60;
 
-        if ($user && ! $user->blocked_at && ! $user->archived_at) {
+        if ($user && ! $user->blocked_at && ! $user->archived_at && $canIssueNewToken) {
             $token = Str::random(64);
             DB::table('password_reset_tokens')->updateOrInsert(
                 ['email_hash' => $emailHash],
@@ -145,27 +154,6 @@ class AuthController extends Controller
         return response()->json(['message' => 'Пароль изменён. Теперь вы можете войти в кабинет.']);
     }
 
-    public function changePassword(Request $request)
-    {
-        $validated = $request->validate([
-            'current_password' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'string', 'min:12', 'max:255', 'confirmed'],
-        ]);
-
-        $user = $request->user();
-        if (! Hash::check($validated['current_password'], $user->password)) {
-            throw ValidationException::withMessages([
-                'current_password' => 'Текущий пароль указан неверно.',
-            ]);
-        }
-
-        $user->forceFill(['password' => $validated['password']])->save();
-        $currentTokenId = $user->currentAccessToken()?->id;
-        $user->tokens()->when($currentTokenId, fn ($query) => $query->where('id', '!=', $currentTokenId))->delete();
-
-        return response()->json(['message' => 'Пароль успешно изменён.']);
-    }
-
     public function updateAvatar(Request $request, MediaStorage $media, MediaOptimizer $optimizer)
     {
         $validated = $request->validate([
@@ -186,6 +174,28 @@ class AuthController extends Controller
         $user->update(['avatar_path' => $avatarPath]);
         $media->delete($previousPath);
         $media->delete($sourcePath);
+
+        return response()->json(['data' => $this->present($user->fresh()->load('clientProfile'))]);
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $data = $request->validate([
+            'first_name' => ['required', 'string', 'max:100'],
+            'last_name' => ['nullable', 'string', 'max:100'],
+            'phone' => ['nullable', 'string', 'max:32'],
+            'new_password' => ['nullable', 'string', 'min:12', 'max:255', 'confirmed'],
+        ]);
+
+        $user = $request->user();
+        $phone = filled($data['phone'] ?? null) ? trim($data['phone']) : null;
+        if ($phone && User::query()->where('phone_hash', User::lookupHash($phone))->whereKeyNot($user->id)->exists()) {
+            throw ValidationException::withMessages(['phone' => 'Этот номер телефона уже используется.']);
+        }
+        $fullName = trim($data['first_name'].' '.($data['last_name'] ?? ''));
+        $user->fill(['name' => $fullName, 'phone' => $phone]);
+        if (filled($data['new_password'] ?? null)) $user->password = $data['new_password'];
+        $user->save();
 
         return response()->json(['data' => $this->present($user->fresh()->load('clientProfile'))]);
     }

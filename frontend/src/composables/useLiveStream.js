@@ -16,7 +16,8 @@ const roomOptions = {
     },
 };
 
-export function useLiveStream() {
+export function useLiveStream(options = {}) {
+    const section = options.section ?? 'workouts';
     const activeStream = ref(null);
     const liveModalOpen = ref(false);
     const liveLoading = ref(false);
@@ -70,7 +71,7 @@ export function useLiveStream() {
     let viewerReconnectInProgress = false;
 
     async function refreshActive() {
-        const { data } = await api.get('/live-streams/active');
+        const { data } = await api.get('/live-streams/active', { params: { section } });
         const previousConferenceState = activeStream.value?.participants_enabled;
         activeStream.value = data.data;
         if (!hostSession
@@ -169,7 +170,7 @@ export function useLiveStream() {
         try {
             if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
                 throw new DOMException('Media devices unavailable', 'SecurityError');
-            const { data } = await api.post('/live-streams/start', recordingDetails);
+            const { data } = await api.post('/live-streams/start', { ...recordingDetails, section });
             activeStream.value = data.data;
             if (recordingDetails.title && data.data?.recording_title !== recordingDetails.title)
                 throw new Error('Сервер не подтвердил сохранение названия записи.');
@@ -181,20 +182,11 @@ export function useLiveStream() {
             await room.startAudio().catch(() => undefined);
             playbackMuted.value = false;
             await room.connect(getBrowserReachableLiveKitUrl(connection.url), connection.token, { autoSubscribe: true });
-            await room.localParticipant.enableCameraAndMicrophone();
-            microphoneEnabled.value = room.localParticipant.isMicrophoneEnabled;
-            cameraEnabled.value = room.localParticipant.isCameraEnabled;
-            cameraFacingMode.value = room.localParticipant
-                .getTrackPublication(Track.Source.Camera)
-                ?.videoTrack
-                ?.mediaStreamTrack
-                ?.getSettings()
-                ?.facingMode ?? 'user';
-
-            // Start server recording only after LiveKit confirms that the
-            // trainer's camera and microphone tracks have been published.
-            const recordingResponse = await api.post(`/live-streams/${activeStream.value.id}/recording/start`);
-            activeStream.value = recordingResponse.data.data;
+            // The host starts the room with both devices disabled. The camera
+            // and microphone remain available through the existing controls.
+            microphoneEnabled.value = false;
+            cameraEnabled.value = false;
+            cameraFacingMode.value = 'user';
 
             liveModalOpen.value = true;
             await nextTick();
@@ -225,6 +217,13 @@ export function useLiveStream() {
         finally {
             liveLoading.value = false;
         }
+    }
+
+    async function startServerRecording() {
+        if (!hostSession || !activeStream.value || activeStream.value.egress_id)
+            return;
+        const { data } = await api.post(`/live-streams/${activeStream.value.id}/recording/start`);
+        activeStream.value = data.data;
     }
 
     async function reconnectViewerForConference() {
@@ -491,6 +490,7 @@ export function useLiveStream() {
             await participant.setCameraEnabled(!participant.isCameraEnabled);
             cameraEnabled.value = participant.isCameraEnabled;
             if (cameraEnabled.value) {
+                await startServerRecording();
                 await nextTick();
                 attachLocalCamera();
                 cameraFacingMode.value = participant

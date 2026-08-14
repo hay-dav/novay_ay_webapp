@@ -14,14 +14,16 @@ class TrainerDashboardController extends Controller
     public function __invoke(Request $request)
     {
         abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        $role = $request->user()->role->value;
 
         $clientProfiles = ClientProfile::query()
             ->with('user')
-            ->when($request->user()->role->value !== 'admin', fn ($query) => $query->where('trainer_id', $request->user()->id))
+            ->when($role === 'trainer', fn ($query) => $query->where('trainer_id', $request->user()->id))
+            ->latest('client_profiles.created_at')
             ->get();
 
         $courseIds = Course::query()
-            ->when($request->user()->role->value !== 'admin', fn ($query) => $query->where('trainer_id', $request->user()->id))
+            ->when($role === 'trainer', fn ($query) => $query->where('trainer_id', $request->user()->id))
             ->pluck('id');
 
         $latestMeasurements = ProgressEntry::query()

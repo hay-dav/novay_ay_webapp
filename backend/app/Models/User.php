@@ -18,8 +18,6 @@ class User extends Authenticatable
 
     protected $fillable = [
         'name',
-        'first_name',
-        'last_name',
         'email',
         'password',
         'role',
@@ -34,6 +32,7 @@ class User extends Authenticatable
         'email_verified_at',
         'privacy_policy_accepted_at',
         'privacy_policy_version',
+        'chat_push_enabled',
     ];
 
     protected $hidden = [
@@ -56,6 +55,7 @@ class User extends Authenticatable
             'blocked_at' => 'datetime',
             'archived_at' => 'datetime',
             'privacy_policy_accepted_at' => 'datetime',
+            'chat_push_enabled' => 'boolean',
         ];
     }
 
@@ -98,6 +98,11 @@ class User extends Authenticatable
     public function accessRequests()
     {
         return $this->hasMany(AccessRequest::class);
+    }
+
+    public function accessPeriods()
+    {
+        return $this->hasMany(AccessPeriod::class);
     }
 
     public function foodEntries()

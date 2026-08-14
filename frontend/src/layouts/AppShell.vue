@@ -9,6 +9,7 @@ import {
     syncWebPushSubscription,
     webPushPermission,
 } from '@/services/webPush';
+import { createRealtimeClient } from '@/services/realtime';
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
@@ -16,23 +17,21 @@ const avatarInput = ref(null);
 const avatarUploading = ref(false);
 const avatarError = ref('');
 const mobileProfileMenuOpen = ref(false);
-const passwordModalOpen = ref(false);
-const currentPassword = ref('');
-const newPassword = ref('');
-const newPasswordConfirmation = ref('');
-const showCurrentPassword = ref(false);
-const showNewPassword = ref(false);
-const showNewPasswordConfirmation = ref(false);
-const passwordSaving = ref(false);
-const passwordError = ref('');
-const passwordMessage = ref('');
+const mobileNavigationOpen = ref(false);
+const profileModalOpen = ref(false);
+const profileSaving = ref(false);
+const profileError = ref('');
+const profileForm = ref({ first_name: '', last_name: '', phone: '', new_password: '', new_password_confirmation: '' });
 const notificationPermission = ref(webPushPermission());
 const pushSubscriptionActive = ref(false);
 const notificationMessage = ref('');
 const unreadChatCount = ref(0);
+const chatPushPreferences = ref({});
 const backendOrigin = api.defaults.baseURL.replace(/\/api\/v1\/?$/, '');
 const seenNotificationIds = new Set();
-let notificationTimer;
+const failedAvatarUrls = new Set();
+let realtime;
+let profileRefreshTimer;
 // The nutrition module is retained for a future release but is temporarily hidden from clients.
 const nutritionFeatureEnabled = false;
 const defaultAvatar = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=120&q=80';
@@ -40,11 +39,32 @@ const mediaUrl = (path) => /^https?:\/\//i.test(path ?? '')
     ? path
     : `${backendOrigin}/${String(path ?? '').replace(/^\/+/, '')}`;
 const avatarSource = computed(() => auth.user?.avatar_path ? mediaUrl(auth.user.avatar_path) : defaultAvatar);
+const canEditProfile = computed(() => auth.user?.role === 'client'
+    || auth.user?.role === 'admin'
+    || Number(auth.user?.id) === 2);
+async function refreshAvatarUrl(event) {
+    const failedUrl = event.currentTarget.currentSrc;
+    if (!failedUrl || failedAvatarUrls.has(failedUrl)) {
+        event.currentTarget.src = defaultAvatar;
+        return;
+    }
+
+    failedAvatarUrls.add(failedUrl);
+    await auth.fetchMe().catch(() => undefined);
+    // A failed refresh must not leave a broken image or cause an error loop.
+    if (avatarSource.value === failedUrl)
+        event.currentTarget.src = defaultAvatar;
+}
 const accessLabel = computed(() => auth.user?.access_status === 'paid' ? 'Платный доступ' : 'Бесплатный доступ');
+// Existing profiles store the given name first. Keep the greeting aligned
+// with the previously established account display behaviour.
 const greetingName = computed(() => {
-    if (auth.user?.first_name)
-        return auth.user.first_name;
-    return String(auth.user?.name ?? '').trim().split(/\s+/).filter(Boolean)[0] ?? 'Анастасия';
+    const parts = String(auth.user?.name ?? '').trim().split(/\s+/).filter(Boolean);
+    // Legacy administrator profile contains only the surname. Keep the header
+    // personal even until that profile is edited through the account settings.
+    if (parts.length === 1 && parts[0].toLocaleLowerCase('ru-RU') === 'лазарева')
+        return 'Анастасия';
+    return parts[0] ?? 'Анастасия';
 });
 const navItems = computed(() => {
     if (auth.isTrainer) {
@@ -53,8 +73,12 @@ const navItems = computed(() => {
             { label: 'Подкасты', to: '/podcasts', icon: 'headphones' },
             { label: 'Главная', to: '/app', icon: 'home' },
             { label: 'Тренировки', to: '/workouts', icon: 'exercise' },
+            { label: 'Эфиры с экспертами', to: '/expert-lives', icon: 'live_tv' },
+            { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
+            { label: 'База знаний', to: '/knowledge-base', icon: 'library_books' },
             { label: 'Участницы', to: '/participants', icon: 'groups' },
-            { label: 'Чат', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
+            ...(['admin', 'curator'].includes(auth.user?.role ?? '') ? [{ label: 'Доступы', to: '/access-management', icon: 'key' }] : []),
+            { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
         ];
     }
     return [
@@ -63,8 +87,11 @@ const navItems = computed(() => {
         { label: 'Главная', to: '/app', icon: 'home' },
         { label: 'Питание', to: '/nutrition', icon: 'lunch_dining' },
         { label: 'Тренировки', to: '/workouts', icon: 'exercise' },
+        { label: 'Эфиры с экспертами', to: '/expert-lives', icon: 'live_tv' },
+        { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
+        { label: 'База знаний', to: '/knowledge-base', icon: 'library_books' },
         { label: 'Прогресс', to: '/progress', icon: 'assignment' },
-        { label: 'Чат', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
+        { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
     ];
 });
 const visibleNavItems = computed(() => navItems.value.filter((item) => nutritionFeatureEnabled || item.to !== '/nutrition'));
@@ -75,6 +102,7 @@ const orderedNavItems = computed(() => [...visibleNavItems.value].sort((first, s
         return 1;
     return 0;
 }));
+const mobileMenuItems = computed(() => visibleNavItems.value.filter((item) => !['/app', '/chat'].includes(item.to)));
 async function logout() {
     mobileProfileMenuOpen.value = false;
     await disableWebPush().catch(() => undefined);
@@ -88,53 +116,26 @@ function openAvatarPicker() {
     mobileProfileMenuOpen.value = false;
     chooseAvatar();
 }
-function openPasswordModal() {
+function openProfileEditor() {
     mobileProfileMenuOpen.value = false;
-    currentPassword.value = '';
-    newPassword.value = '';
-    newPasswordConfirmation.value = '';
-    passwordError.value = '';
-    passwordMessage.value = '';
-    showCurrentPassword.value = false;
-    showNewPassword.value = false;
-    showNewPasswordConfirmation.value = false;
-    passwordModalOpen.value = true;
+    const [firstName = '', ...lastName] = String(auth.user?.name ?? '').trim().split(/\s+/).filter(Boolean);
+    profileForm.value = { first_name: firstName, last_name: lastName.join(' '), phone: auth.user?.phone ?? '', new_password: '', new_password_confirmation: '' };
+    profileError.value = '';
+    profileModalOpen.value = true;
 }
-function closePasswordModal() {
-    if (!passwordSaving.value)
-        passwordModalOpen.value = false;
-}
-async function changePassword() {
-    passwordError.value = '';
-    passwordMessage.value = '';
-    if (newPassword.value.length < 12) {
-        passwordError.value = 'Новый пароль должен содержать не менее 12 символов.';
-        return;
-    }
-    if (newPassword.value !== newPasswordConfirmation.value) {
-        passwordError.value = 'Новые пароли не совпадают.';
-        return;
-    }
-    passwordSaving.value = true;
+async function saveProfile() {
+    profileSaving.value = true;
+    profileError.value = '';
     try {
-        const { data } = await api.patch('/auth/password', {
-            current_password: currentPassword.value,
-            password: newPassword.value,
-            password_confirmation: newPasswordConfirmation.value,
-        });
-        passwordMessage.value = data.message;
-        currentPassword.value = '';
-        newPassword.value = '';
-        newPasswordConfirmation.value = '';
+        const { data } = await api.patch('/auth/profile', profileForm.value);
+        auth.user = data.data;
+        profileModalOpen.value = false;
     }
-    catch (requestError) {
-        const validationErrors = requestError.response?.data?.errors;
-        passwordError.value = (validationErrors ? Object.values(validationErrors).flat().find(Boolean) : null)
-            ?? requestError.response?.data?.message
-            ?? 'Не удалось изменить пароль.';
+    catch (error) {
+        profileError.value = Object.values(error.response?.data?.errors ?? {}).flat()[0] ?? 'Не удалось сохранить данные.';
     }
     finally {
-        passwordSaving.value = false;
+        profileSaving.value = false;
     }
 }
 async function uploadAvatar(event) {
@@ -167,7 +168,7 @@ async function checkBrowserNotifications(isInitial = false) {
         if (seenNotificationIds.has(item.id))
             continue;
         seenNotificationIds.add(item.id);
-        if (!isInitial && notificationPermission.value === 'granted' && !pushSubscriptionActive.value)
+        if (!isInitial && notificationPermission.value === 'granted' && !pushSubscriptionActive.value && (item.type !== 'chat' || isChatPushEnabled(item)))
             await showBrowserNotification(item);
     }
 }
@@ -176,6 +177,36 @@ async function refreshUnreadChatCount() {
         return;
     const { data } = await api.get('/chat/unread-count');
     unreadChatCount.value = Number(data.data?.count ?? 0);
+}
+async function loadChatPushPreferences() {
+    if (!auth.user)
+        return;
+    const { data } = await api.get('/chat/notification-preferences');
+    chatPushPreferences.value = data.data ?? {};
+}
+function isChatPushEnabled(notification) {
+    const key = notification.data?.chat_notification_key;
+    return !key || chatPushPreferences.value[key] !== false;
+}
+async function handleRealtimeNotification(notification) {
+    if (!notification || seenNotificationIds.has(notification.id))
+        return;
+    seenNotificationIds.add(notification.id);
+    // Let the open chat fetch the message immediately. The unread-count API
+    // request can complete independently without delaying the conversation.
+    window.dispatchEvent(new CustomEvent('novaya-ya:notification', { detail: notification }));
+    if (notification.type === 'chat')
+        await refreshUnreadChatCount().catch(() => undefined);
+    if (notificationPermission.value === 'granted' && !pushSubscriptionActive.value && (notification.type !== 'chat' || isChatPushEnabled(notification)))
+        await showBrowserNotification(notification);
+}
+function startRealtime() {
+    if (!auth.token || !auth.user)
+        return;
+    realtime = createRealtimeClient(auth.token);
+    realtime.private(`users.${auth.user.id}`).listen('.notification.created', ({ notification }) => {
+        handleRealtimeNotification(notification).catch(() => undefined);
+    });
 }
 async function showBrowserNotification(item) {
     const options = {
@@ -217,28 +248,55 @@ async function enableBrowserNotifications() {
         notificationMessage.value = 'Не удалось включить push-уведомления. Обновите страницу и попробуйте ещё раз.';
     }
 }
+async function toggleBrowserNotifications() {
+    if (!pushSubscriptionActive.value) {
+        await enableBrowserNotifications();
+        return;
+    }
+
+    notificationMessage.value = '';
+    try {
+        await disableWebPush();
+        pushSubscriptionActive.value = false;
+        notificationMessage.value = 'Push-уведомления отключены.';
+    }
+    catch {
+        notificationMessage.value = 'Не удалось отключить push-уведомления. Попробуйте ещё раз.';
+    }
+}
 onMounted(async () => {
     pushSubscriptionActive.value = await syncWebPushSubscription().catch(() => false);
     notificationPermission.value = webPushPermission();
     await Promise.all([
         checkBrowserNotifications(true).catch(() => undefined),
         refreshUnreadChatCount().catch(() => undefined),
+        loadChatPushPreferences().catch(() => undefined),
     ]);
-    notificationTimer = window.setInterval(() => {
-        checkBrowserNotifications().catch(() => undefined);
-        refreshUnreadChatCount().catch(() => undefined);
-    }, 10000);
+    startRealtime();
+    // Private S3 avatar URLs are short-lived. Refresh the profile before the
+    // one-hour signature expires, including during a long open mobile session.
+    profileRefreshTimer = window.setInterval(() => auth.fetchMe().catch(() => undefined), 45 * 60 * 1000);
 });
 function closeMobileProfileMenuOnEscape(event) {
-    if (event.key === 'Escape') {
+    if (event.key === 'Escape')
         mobileProfileMenuOpen.value = false;
-        closePasswordModal();
-    }
+}
+function updateChatPushPreference(event) {
+    const preference = event.detail;
+    if (preference?.chat_key) chatPushPreferences.value = { ...chatPushPreferences.value, [preference.chat_key]: preference.enabled };
+}
+function refreshUnreadAfterChatRead() {
+    refreshUnreadChatCount().catch(() => undefined);
 }
 onMounted(() => window.addEventListener('keydown', closeMobileProfileMenuOnEscape));
+onMounted(() => window.addEventListener('novaya-ya:chat-push-preference', updateChatPushPreference));
+onMounted(() => window.addEventListener('novaya-ya:chat-read', refreshUnreadAfterChatRead));
 onBeforeUnmount(() => {
-    window.clearInterval(notificationTimer);
+    realtime?.disconnect();
+    window.clearInterval(profileRefreshTimer);
     window.removeEventListener('keydown', closeMobileProfileMenuOnEscape);
+    window.removeEventListener('novaya-ya:chat-push-preference', updateChatPushPreference);
+    window.removeEventListener('novaya-ya:chat-read', refreshUnreadAfterChatRead);
 });
 </script>
 
@@ -251,7 +309,7 @@ onBeforeUnmount(() => {
         <img class="h-full w-full object-contain object-left [filter:brightness(0)_invert(1)_drop-shadow(0_0_8px_rgba(255,255,255,0.45))]" src="/public-image/novaya-ya-logo-header.png" alt="Новая Я, Курс Лазаревой" />
       </RouterLink>
 
-      <nav class="grid gap-2 overflow-y-auto pr-1">
+      <nav class="desktop-sidebar-scroll grid gap-2 overflow-y-auto pr-2">
         <RouterLink
           v-for="item in orderedNavItems"
           :key="item.to + item.label"
@@ -265,10 +323,20 @@ onBeforeUnmount(() => {
         </RouterLink>
       </nav>
 
+      <div class="mt-auto rounded-2xl border border-white/10 bg-surface-container/70 p-4">
+        <p class="text-xs font-medium uppercase text-outline">Профиль</p>
+        <p class="mt-1 truncate text-sm font-bold text-on-surface">{{ auth.user?.name }}</p>
+        <p class="mt-1 text-xs font-semibold text-primary">
+          {{ accessLabel }}
+        </p>
+        <button class="mt-4 w-full rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-on-muted" @click="logout">
+          Выйти
+        </button>
+      </div>
     </aside>
 
-    <main class="mx-auto min-h-screen w-full max-w-[1280px] px-5 pb-28 pt-7 lg:pl-[292px] lg:pr-10">
-      <header class="mb-8 flex items-center justify-between gap-4">
+    <main class="mx-auto min-h-screen w-full max-w-[1280px] px-5 pb-28 pt-7 lg:pl-[292px] lg:pr-10" :class="route.name === 'chat' ? 'max-lg:px-0 max-lg:pb-20 max-lg:pt-0' : ''">
+      <header class="mb-8 flex items-center justify-between gap-4" :class="route.name === 'chat' ? 'max-lg:hidden' : ''">
         <div>
           <RouterLink to="/" class="mb-2 flex h-9 items-center lg:hidden" aria-label="Новая Я">
             <img class="h-full w-[128px] object-contain object-left [filter:brightness(0)_invert(1)_drop-shadow(0_0_8px_rgba(255,255,255,0.45))]" src="/public-image/novaya-ya-logo-header.png" alt="Новая Я, Курс Лазаревой" />
@@ -280,8 +348,8 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="relative flex items-center gap-3">
-          <button class="relative grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-surface-container text-on-muted" type="button" :title="pushSubscriptionActive ? 'Push-уведомления включены' : 'Включить push-уведомления'" aria-label="Включить push-уведомления" :aria-pressed="pushSubscriptionActive" @click="enableBrowserNotifications">
-            <span class="material-symbols-outlined text-[22px]">notifications</span>
+          <button class="relative grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-surface-container text-on-muted" type="button" :title="pushSubscriptionActive ? 'Отключить push-уведомления' : 'Включить push-уведомления'" :aria-label="pushSubscriptionActive ? 'Отключить push-уведомления' : 'Включить push-уведомления'" :aria-pressed="pushSubscriptionActive" @click="toggleBrowserNotifications">
+            <span class="material-symbols-outlined text-[22px]">{{ pushSubscriptionActive ? 'notifications' : 'notifications_off' }}</span>
             <span v-if="!pushSubscriptionActive" class="absolute right-2 top-2 h-2 w-2 rounded-full bg-primary" />
           </button>
           <div class="relative h-11 w-11 overflow-hidden rounded-full border border-primary/30 bg-surface-high">
@@ -289,30 +357,31 @@ onBeforeUnmount(() => {
               class="h-full w-full object-cover"
               alt="Аватар пользователя"
               :src="avatarSource"
-              @error="(event) => { event.currentTarget.src = defaultAvatar; }"
+              @error="refreshAvatarUrl"
             />
             <button
-              class="absolute inset-0 hidden place-items-center bg-black/35 text-white opacity-0 transition hover:opacity-100 focus:opacity-100 lg:grid"
+              v-if="canEditProfile"
+              class="absolute inset-0 hidden place-items-center bg-black/55 text-white opacity-0 transition hover:opacity-100 focus:opacity-100 lg:grid"
               type="button"
-              title="Открыть меню профиля"
-              aria-label="Открыть меню профиля"
-              :aria-expanded="mobileProfileMenuOpen"
-              @click="mobileProfileMenuOpen = !mobileProfileMenuOpen"
+              title="Изменить аватар"
+              aria-label="Изменить аватар"
+              :disabled="avatarUploading"
+              @click="openProfileEditor"
             >
-              <span class="material-symbols-outlined text-[18px]">manage_accounts</span>
+              <span class="material-symbols-outlined text-[18px]">photo_camera</span>
             </button>
             <button class="absolute inset-0 grid place-items-center lg:hidden" type="button" aria-label="Открыть меню профиля" :aria-expanded="mobileProfileMenuOpen" @click="mobileProfileMenuOpen = !mobileProfileMenuOpen"><span class="sr-only">Меню профиля</span></button>
             <input ref="avatarInput" class="hidden" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" @change="uploadAvatar" />
           </div>
-          <button v-if="mobileProfileMenuOpen" class="fixed inset-0 z-40 cursor-default" type="button" aria-label="Закрыть меню профиля" @click="mobileProfileMenuOpen = false" />
-          <div v-if="mobileProfileMenuOpen" class="absolute right-0 top-14 z-50 w-60 overflow-hidden rounded-2xl border border-white/10 bg-surface-highest p-2 shadow-2xl" role="menu" aria-label="Меню профиля">
+          <button v-if="mobileProfileMenuOpen" class="fixed inset-0 z-40 cursor-default lg:hidden" type="button" aria-label="Закрыть меню профиля" @click="mobileProfileMenuOpen = false" />
+          <div v-if="mobileProfileMenuOpen" class="absolute right-0 top-14 z-50 w-60 overflow-hidden rounded-2xl border border-white/10 bg-surface-highest p-2 shadow-2xl lg:hidden" role="menu" aria-label="Меню профиля">
             <div class="mb-2 rounded-xl border border-white/10 bg-surface-container/70 px-3 py-3">
               <p class="text-[11px] font-medium uppercase tracking-wide text-outline">Профиль</p>
               <p class="mt-1 truncate text-sm font-bold text-on-surface">{{ auth.user?.name }}</p>
               <p class="mt-1 text-xs font-semibold text-primary">{{ accessLabel }}</p>
             </div>
             <button class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-on-surface hover:bg-white/5" type="button" role="menuitem" :disabled="avatarUploading" @click="openAvatarPicker"><span class="material-symbols-outlined text-primary">photo_camera</span>{{ avatarUploading ? 'Загружаем...' : 'Сменить аватар' }}</button>
-            <button class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-on-surface hover:bg-white/5" type="button" role="menuitem" @click="openPasswordModal"><span class="material-symbols-outlined text-primary">password</span>Сменить пароль</button>
+            <button class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-on-surface hover:bg-white/5" type="button" role="menuitem" @click="openProfileEditor"><span class="material-symbols-outlined text-primary">manage_accounts</span>Редактировать данные</button>
             <button class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-red-200 hover:bg-red-500/10" type="button" role="menuitem" @click="logout"><span class="material-symbols-outlined">logout</span>Выйти из профиля</button>
           </div>
         </div>
@@ -321,47 +390,47 @@ onBeforeUnmount(() => {
 
       <RouterView />
 
-      <footer class="mt-10 border-t border-white/10 pt-5 text-center text-xs text-on-muted">
+      <footer class="mt-10 border-t border-white/10 pt-5 text-center text-xs text-on-muted" :class="route.name === 'chat' ? 'max-lg:hidden' : ''">
         <RouterLink to="/privacy-policy" class="underline decoration-primary/60 underline-offset-4 transition hover:text-primary">
           Политика конфиденциальности
         </RouterLink>
       </footer>
+
+      <div v-if="profileModalOpen" class="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/70 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[calc(5.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Редактирование профиля" @click.self="profileModalOpen = false">
+        <form class="my-auto flex w-full max-w-md max-h-[calc(100dvh-6.5rem-env(safe-area-inset-bottom))] flex-col overflow-hidden rounded-[24px] border border-white/10 bg-surface-highest p-4 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:rounded-[28px] sm:p-7" @submit.prevent="saveProfile">
+          <div class="mb-3 flex shrink-0 items-center justify-between gap-3 sm:mb-5"><div><h2 class="text-lg font-extrabold sm:text-xl">Редактировать данные</h2><p class="mt-1 text-sm text-on-muted">Персональные данные и безопасность</p></div><button class="grid h-9 w-9 place-items-center rounded-xl text-on-muted hover:bg-white/5 sm:h-10 sm:w-10" type="button" aria-label="Закрыть" @click="profileModalOpen = false"><span class="material-symbols-outlined">close</span></button></div>
+          <div class="brand-scrollbar min-h-0 flex-1 overflow-y-auto px-0.5 pr-1">
+            <button class="mb-3 flex items-center gap-3 rounded-2xl border border-white/10 bg-surface-container px-4 py-2.5 text-left text-sm font-bold hover:bg-white/5 sm:mb-5 sm:py-3" type="button" :disabled="avatarUploading" @click="chooseAvatar"><span class="material-symbols-outlined text-primary">photo_camera</span>{{ avatarUploading ? 'Загружаем...' : 'Сменить аватар' }}</button>
+            <div class="grid min-w-0 gap-3 sm:grid-cols-2 sm:gap-4"><label class="grid min-w-0 gap-1.5 text-sm font-semibold">Имя<input v-model.trim="profileForm.first_name" class="w-full min-w-0 rounded-xl border border-white/10 bg-surface-container px-3 py-2.5 text-on-surface outline-none focus:border-primary sm:py-3" required maxlength="100" /></label><label class="grid min-w-0 gap-1.5 text-sm font-semibold">Фамилия<input v-model.trim="profileForm.last_name" class="w-full min-w-0 rounded-xl border border-white/10 bg-surface-container px-3 py-2.5 text-on-surface outline-none focus:border-primary sm:py-3" maxlength="100" /></label></div>
+            <label class="mt-3 grid gap-1.5 text-sm font-semibold sm:mt-4">Номер телефона<input v-model.trim="profileForm.phone" class="rounded-xl border border-white/10 bg-surface-container px-3 py-2.5 text-on-surface outline-none focus:border-primary sm:py-3" type="tel" maxlength="32" /></label>
+            <div class="mt-4 border-t border-white/10 pt-4 sm:mt-6 sm:pt-5"><h3 class="font-extrabold">Смена пароля</h3><p class="mt-1 text-xs text-on-muted">Введите новый пароль и повторите его. Действующий пароль не требуется.</p><div class="mt-3 grid gap-3"><input v-model="profileForm.new_password" class="rounded-xl border border-white/10 bg-surface-container px-3 py-2.5 text-on-surface outline-none focus:border-primary sm:py-3" type="password" placeholder="Новый пароль (не менее 12 символов)" autocomplete="new-password" /><input v-model="profileForm.new_password_confirmation" class="rounded-xl border border-white/10 bg-surface-container px-3 py-2.5 text-on-surface outline-none focus:border-primary sm:py-3" type="password" placeholder="Повторите новый пароль" autocomplete="new-password" /></div></div>
+            <p v-if="profileError" class="mt-4 text-sm font-semibold text-red-300">{{ profileError }}</p>
+          </div>
+          <div class="mt-3 shrink-0 border-t border-white/10 pt-3"><button class="w-full rounded-xl bg-primary px-4 py-2.5 font-extrabold text-[#470382] disabled:opacity-60 sm:py-3" type="submit" :disabled="profileSaving">{{ profileSaving ? 'Сохраняем...' : 'Сохранить изменения' }}</button></div>
+        </form>
+      </div>
     </main>
 
-    <nav class="fixed bottom-0 z-50 w-full rounded-t-[28px] border-t border-white/5 bg-surface-highest/90 px-4 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(109,56,168,0.15)] backdrop-blur-2xl lg:hidden">
-      <div class="mx-auto flex h-20 max-w-md items-center justify-around overflow-x-auto">
-        <RouterLink
-          v-for="item in orderedNavItems"
-          :key="item.to + item.label"
-          :to="item.to"
-          class="tap-clear relative flex w-16 flex-col items-center justify-center text-on-muted transition"
-          active-class="scale-110 font-bold text-primary"
-        >
-          <span class="material-symbols-outlined mb-1 text-[24px]">{{ item.icon }}</span>
-          <span class="text-[10px] font-semibold leading-[14px]">{{ item.label }}</span>
-          <span v-if="item.unread" class="absolute right-1 top-2 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]" :aria-label="`${item.unread} непрочитанных сообщений`">{{ item.unread > 99 ? '99+' : item.unread }}</span>
-        </RouterLink>
+    <div v-if="mobileNavigationOpen" class="mobile-navigation-backdrop fixed inset-0 z-[60] flex items-end bg-black/70 px-4 pt-16 backdrop-blur-sm lg:hidden" @click.self="mobileNavigationOpen = false">
+      <div class="relative mx-auto w-full max-w-md">
+        <section class="mobile-navigation-sheet brand-scrollbar relative z-10 w-full overflow-y-auto rounded-[28px] border border-white/10 bg-surface-highest p-4 shadow-2xl" role="dialog" aria-modal="true" aria-label="Разделы приложения">
+          <div class="mb-3 flex items-center justify-between px-2"><h2 class="text-xl font-extrabold">Меню</h2><button class="grid h-10 w-10 place-items-center rounded-xl text-on-muted hover:bg-white/5" type="button" aria-label="Закрыть меню" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined">close</span></button></div>
+          <div class="grid grid-cols-2 gap-3">
+            <RouterLink v-for="item in mobileMenuItems" :key="item.to" :to="item.to" class="flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 bg-surface-container p-4 text-on-surface transition hover:border-primary/35 hover:bg-primary/10" active-class="border-primary/50 bg-primary/15 text-primary" @click="mobileNavigationOpen = false">
+              <span class="material-symbols-outlined text-[28px] text-primary">{{ item.icon }}</span><span class="text-sm font-extrabold leading-5">{{ item.label }}</span>
+            </RouterLink>
+          </div>
+        </section>
+        <span class="pointer-events-none absolute -bottom-3 left-1/2 z-20 h-7 w-7 -translate-x-1/2 rotate-45 border-b border-r border-white/10 bg-surface-highest shadow-[8px_8px_18px_rgba(109,56,168,0.18)]" aria-hidden="true" />
+      </div>
+    </div>
+
+    <nav class="fixed bottom-0 z-[70] w-full rounded-t-[28px] border-t border-white/5 bg-surface-highest/90 px-4 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(109,56,168,0.15)] backdrop-blur-2xl lg:hidden" aria-label="Основная навигация">
+      <div class="mx-auto grid h-20 max-w-md grid-cols-3 items-center">
+        <RouterLink to="/app" class="tap-clear flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined mb-1 text-[24px]">home</span><span class="text-[10px] font-semibold">Главная</span></RouterLink>
+        <button class="tap-clear flex flex-col items-center justify-center text-on-muted transition" :class="mobileNavigationOpen ? 'font-bold text-primary' : ''" type="button" :aria-expanded="mobileNavigationOpen" @click="mobileNavigationOpen = !mobileNavigationOpen"><span class="material-symbols-outlined leading-none text-primary" style="font-size: 35px">apps</span><span class="text-[10px] font-semibold">Меню</span></button>
+        <RouterLink to="/chat" class="tap-clear relative flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined mb-1 text-[24px]">forum</span><span class="text-[10px] font-semibold">Чаты</span><span v-if="unreadChatCount" class="absolute right-[26%] top-2 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]">{{ unreadChatCount > 99 ? '99+' : unreadChatCount }}</span></RouterLink>
       </div>
     </nav>
-
-    <Teleport to="body">
-      <div v-if="passwordModalOpen" class="app-modal-backdrop z-[100] bg-black/70 backdrop-blur-sm" @mousedown.self="closePasswordModal">
-        <section class="app-modal-panel glass-panel w-full max-w-lg rounded-[28px] p-5 sm:p-7" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
-          <header class="mb-6 flex items-start justify-between gap-4">
-            <div><p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Безопасность</p><h2 id="password-modal-title" class="mt-1 text-2xl font-extrabold">Смена пароля</h2></div>
-            <button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 text-on-muted" type="button" aria-label="Закрыть" @click="closePasswordModal"><span class="material-symbols-outlined">close</span></button>
-          </header>
-          <form class="grid gap-4" @submit.prevent="changePassword">
-            <label class="grid gap-2 text-sm font-bold text-on-muted">Текущий пароль<span class="relative"><input v-model="currentPassword" class="w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-4 pr-12 text-on-surface outline-none focus:border-primary/50" :type="showCurrentPassword ? 'text' : 'password'" autocomplete="current-password" required /><button class="absolute inset-y-0 right-0 grid w-12 place-items-center text-on-muted hover:text-primary" type="button" :aria-label="showCurrentPassword ? 'Скрыть пароль' : 'Показать пароль'" @click="showCurrentPassword = !showCurrentPassword"><span class="material-symbols-outlined text-[20px]">{{ showCurrentPassword ? 'visibility_off' : 'visibility' }}</span></button></span></label>
-            <label class="grid gap-2 text-sm font-bold text-on-muted">Новый пароль<span class="relative"><input v-model="newPassword" class="w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-4 pr-12 text-on-surface outline-none focus:border-primary/50" :type="showNewPassword ? 'text' : 'password'" autocomplete="new-password" minlength="12" required /><button class="absolute inset-y-0 right-0 grid w-12 place-items-center text-on-muted hover:text-primary" type="button" :aria-label="showNewPassword ? 'Скрыть пароль' : 'Показать пароль'" @click="showNewPassword = !showNewPassword"><span class="material-symbols-outlined text-[20px]">{{ showNewPassword ? 'visibility_off' : 'visibility' }}</span></button></span></label>
-            <label class="grid gap-2 text-sm font-bold text-on-muted">Повторите новый пароль<span class="relative"><input v-model="newPasswordConfirmation" class="w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-4 pr-12 text-on-surface outline-none focus:border-primary/50" :type="showNewPasswordConfirmation ? 'text' : 'password'" autocomplete="new-password" minlength="12" required /><button class="absolute inset-y-0 right-0 grid w-12 place-items-center text-on-muted hover:text-primary" type="button" :aria-label="showNewPasswordConfirmation ? 'Скрыть пароль' : 'Показать пароль'" @click="showNewPasswordConfirmation = !showNewPasswordConfirmation"><span class="material-symbols-outlined text-[20px]">{{ showNewPasswordConfirmation ? 'visibility_off' : 'visibility' }}</span></button></span></label>
-            <p class="text-xs leading-5 text-on-muted">Используйте не менее 12 символов. Остальные активные сеансы будут завершены.</p>
-            <p v-if="passwordError" class="rounded-xl border border-danger/20 bg-danger-container/20 px-4 py-3 text-sm font-bold text-danger" role="alert">{{ passwordError }}</p>
-            <p v-if="passwordMessage" class="rounded-xl border border-primary/25 bg-primary/10 px-4 py-3 text-sm font-bold text-primary" role="status">{{ passwordMessage }}</p>
-            <button class="rounded-2xl bg-primary px-6 py-4 font-extrabold text-[#470382] disabled:opacity-50" type="submit" :disabled="passwordSaving">{{ passwordSaving ? 'Сохраняем...' : 'Изменить пароль' }}</button>
-          </form>
-        </section>
-      </div>
-    </Teleport>
   </div>
 </template>

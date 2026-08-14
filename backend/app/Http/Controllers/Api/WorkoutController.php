@@ -11,7 +11,6 @@ use App\Models\WorkoutCompletion;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
@@ -19,16 +18,19 @@ class WorkoutController extends Controller
 {
     public function index(Request $request)
     {
+        $section = $request->validate(['section' => ['nullable', 'in:workouts,experts']])['section'] ?? 'workouts';
         $user = $request->user();
         $isPaid = $request->user()->access_status === 'paid'
             || in_array($request->user()->role->value, ['admin', 'curator', 'trainer'], true);
         $canDownloadLiveRecordings = in_array($request->user()->role->value, ['admin', 'curator'], true);
 
         $workouts = Workout::query()
+            ->where('section', $section)
             ->when(! $isPaid, fn ($query) => $query->where('access_level', 'free'))
             ->latest()
             ->get();
         $recordingWorkoutIds = LiveStream::query()
+            ->where('section', $section)
             ->whereNotNull('recording_workout_id')
             ->pluck('recording_workout_id')
             ->flip();
@@ -102,6 +104,7 @@ class WorkoutController extends Controller
             'duration_seconds' => 0,
             'timer_seconds' => 45,
             'access_level' => $validated['access_level'],
+            'section' => 'workouts',
         ]);
         if ($coverPath) {
             OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'cover_path', $coverPath, 'image', true);
@@ -189,10 +192,7 @@ class WorkoutController extends Controller
         }
 
         $filename = (Str::slug($workout->title) ?: 'live-recording').'.mp4';
-        $downloadUrl = Storage::disk('s3')->temporaryUrl($workout->video_path, now()->addMinutes(15), [
-            'ResponseContentDisposition' => 'attachment; filename="'.$filename.'"',
-            'ResponseContentType' => 'video/mp4',
-        ]);
+        $downloadUrl = app(MediaStorage::class)->secureCdnDownloadUrl($workout->video_path, $filename);
 
         return redirect()->away($downloadUrl);
     }

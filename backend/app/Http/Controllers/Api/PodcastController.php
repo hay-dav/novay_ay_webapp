@@ -37,7 +37,7 @@ class PodcastController extends Controller
 
     public function store(Request $request, MediaStorage $media)
     {
-        abort_unless($request->user()->role->value === 'admin', 403);
+        abort_unless(in_array($request->user()->role->value, ['admin', 'curator'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],

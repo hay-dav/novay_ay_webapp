@@ -60,7 +60,7 @@ function detachVideo(track, element) {
 }
 
 function signalRecordingStarted() {
-    if (recordingStarted || !primaryTrack)
+    if (recordingStarted)
         return;
     recordingStarted = true;
     window.requestAnimationFrame(() => {

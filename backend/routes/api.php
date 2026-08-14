@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\AccessManagementController;
 use App\Http\Controllers\Api\ArticleLessonController;
 use App\Http\Controllers\Api\AccessRequestController;
 use App\Http\Controllers\Api\AdminDashboardController;
@@ -24,7 +25,7 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->group(function (): void {
     Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
-    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
+    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
     Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
     Route::get('/workouts/{workout}/stream', [WorkoutController::class, 'stream'])
         ->middleware('signed')
@@ -43,10 +44,11 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/auth/me', [AuthController::class, 'me']);
         Route::post('/auth/logout', [AuthController::class, 'logout']);
         Route::post('/auth/avatar', [AuthController::class, 'updateAvatar']);
-        Route::patch('/auth/password', [AuthController::class, 'changePassword'])->middleware('throttle:5,1');
+        Route::patch('/auth/profile', [AuthController::class, 'updateProfile']);
 
         Route::get('/article-lessons', [ArticleLessonController::class, 'index']);
         Route::post('/article-lessons', [ArticleLessonController::class, 'store']);
+        Route::patch('/article-lessons/order', [ArticleLessonController::class, 'reorder']);
         Route::patch('/article-lessons/{lesson}', [ArticleLessonController::class, 'update']);
         Route::delete('/article-lessons/{lesson}', [ArticleLessonController::class, 'destroy']);
         Route::get('/podcasts', [PodcastController::class, 'index']);
@@ -97,11 +99,22 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/push-subscriptions/public-key', [PushSubscriptionController::class, 'publicKey']);
         Route::post('/push-subscriptions', [PushSubscriptionController::class, 'store']);
         Route::delete('/push-subscriptions', [PushSubscriptionController::class, 'destroy']);
+        Route::patch('/notification-preferences/chat', [PushSubscriptionController::class, 'updateChatPreference']);
         Route::get('/chat/messages', [ChatController::class, 'index']);
         Route::post('/chat/messages', [ChatController::class, 'store']);
+        Route::patch('/chat/messages/{chatMessage}', [ChatController::class, 'update']);
+        Route::post('/chat/messages/{chatMessage}/reactions', [ChatController::class, 'toggleReaction']);
+        Route::get('/chat/mentionables', [ChatController::class, 'mentionables']);
+        Route::get('/chat/notification-preferences', [ChatController::class, 'notificationPreferences']);
+        Route::patch('/chat/notification-preferences', [ChatController::class, 'updateNotificationPreference']);
+        Route::get('/chat/general', [ChatController::class, 'general']);
+        Route::get('/chat/general/messages', [ChatController::class, 'generalMessages']);
+        Route::get('/chat/important', [ChatController::class, 'important']);
+        Route::get('/chat/important/messages', [ChatController::class, 'importantMessages']);
         Route::get('/chat/peers', [ChatController::class, 'peers']);
         Route::get('/chat/unread-count', [ChatController::class, 'unreadCount']);
         Route::get('/chat/conversations', [ChatController::class, 'conversations']);
+        Route::get('/chat/curator-conversations', [ChatController::class, 'curatorConversations']);
         Route::get('/access-requests', [AccessRequestController::class, 'index']);
         Route::post('/access-requests', [AccessRequestController::class, 'store']);
         Route::patch('/access-requests/{accessRequest}/approve', [AccessRequestController::class, 'approve']);
@@ -114,5 +127,8 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/admin/users/{user}/details', [AdminDashboardController::class, 'clientDetails']);
         Route::post('/admin/users/{user}/comments', [AdminDashboardController::class, 'storeClientComment']);
         Route::post('/admin/notifications', [AdminDashboardController::class, 'sendNotification']);
+        Route::get('/admin/access-management', [AccessManagementController::class, 'index']);
+        Route::post('/admin/access-management/grant', [AccessManagementController::class, 'grant']);
+        Route::delete('/admin/access-management/scheduled', [AccessManagementController::class, 'cancelScheduled']);
     });
 });

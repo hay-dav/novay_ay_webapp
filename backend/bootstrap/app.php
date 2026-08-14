@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -17,6 +18,9 @@ return Application::configure(basePath: dirname(__DIR__))
         __DIR__.'/../routes/channels.php',
         ['middleware' => ['api', 'auth:sanctum']],
     )
+    ->withSchedule(function (Schedule $schedule): void {
+        $schedule->command('access:sync')->everyMinute()->withoutOverlapping();
+    })
     ->withMiddleware(function (Middleware $middleware): void {
         // The web client authenticates with Sanctum bearer tokens, so the
         // stateful cookie/CSRF middleware must not be enabled for API routes.

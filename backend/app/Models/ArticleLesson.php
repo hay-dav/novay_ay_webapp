@@ -14,6 +14,8 @@ class ArticleLesson extends Model
         'image_path',
         'access_level',
         'published_at',
+        'sort_order',
+        'section',
     ];
 
     protected function casts(): array

@@ -93,4 +93,12 @@ class PushSubscriptionController extends Controller
 
         return response()->noContent();
     }
+
+    public function updateChatPreference(Request $request)
+    {
+        $validated = $request->validate(['enabled' => ['required', 'boolean']]);
+        $request->user()->update(['chat_push_enabled' => $validated['enabled']]);
+
+        return response()->json(['data' => ['chat_push_enabled' => (bool) $validated['enabled']]]);
+    }
 }

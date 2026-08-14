@@ -12,11 +12,13 @@ const ProgressView = () => import('@/views/ProgressView.vue');
 const NutritionView = () => import('@/views/NutritionView.vue');
 const TrainerView = () => import('@/views/TrainerView.vue');
 const WorkoutsView = () => import('@/views/WorkoutsView.vue');
+const ExpertLivesView = () => import('@/views/ExpertLivesView.vue');
 const ChatView = () => import('@/views/ChatView.vue');
 const AdminView = () => import('@/views/AdminView.vue');
 const ParticipantsView = () => import('@/views/ParticipantsView.vue');
 const ArticleLessonsView = () => import('@/views/ArticleLessonsView.vue');
 const PodcastsView = () => import('@/views/PodcastsView.vue');
+const AccessManagementView = () => import('@/views/AccessManagementView.vue');
 // Keep the nutrition module in place for a future release.
 const nutritionFeatureEnabled = false;
 const router = createRouter({
@@ -31,11 +33,15 @@ const router = createRouter({
         { path: '/courses/:slug', name: 'course', component: CourseView, meta: { requiresAuth: true } },
         { path: '/progress', name: 'progress', component: ProgressView, meta: { requiresAuth: true } },
         { path: '/nutrition', name: 'nutrition', component: NutritionView, meta: { requiresAuth: true, nutritionFeature: true } },
-        { path: '/workouts', name: 'workouts', component: WorkoutsView, meta: { requiresAuth: true } },
-        { path: '/lessons', name: 'article-lessons', component: ArticleLessonsView, meta: { requiresAuth: true } },
+        { path: '/workouts', name: 'workouts', component: WorkoutsView, props: { section: 'workouts' }, meta: { requiresAuth: true } },
+        { path: '/expert-lives', name: 'expert-lives', component: ExpertLivesView, meta: { requiresAuth: true } },
+        { path: '/lessons', name: 'article-lessons', component: ArticleLessonsView, props: { section: 'lessons' }, meta: { requiresAuth: true } },
+        { path: '/recipes', name: 'recipes', component: ArticleLessonsView, props: { section: 'recipes' }, meta: { requiresAuth: true } },
+        { path: '/knowledge-base', name: 'knowledge-base', component: ArticleLessonsView, props: { section: 'knowledge' }, meta: { requiresAuth: true } },
         { path: '/podcasts', name: 'podcasts', component: PodcastsView, meta: { requiresAuth: true } },
         { path: '/chat', name: 'chat', component: ChatView, meta: { requiresAuth: true } },
         { path: '/participants', name: 'participants', component: ParticipantsView, meta: { requiresAuth: true, trainerOnly: true } },
+        { path: '/access-management', name: 'access-management', component: AccessManagementView, meta: { requiresAuth: true, accessManagerOnly: true } },
         { path: '/trainer', name: 'trainer', component: TrainerView, meta: { requiresAuth: true, trainerOnly: true } },
         { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAuth: true, adminOnly: true } },
     ],
@@ -60,6 +66,9 @@ router.beforeEach(async (to) => {
         return { name: 'dashboard' };
     }
     if (to.meta.adminOnly && !auth.isAdmin) {
+        return { name: 'dashboard' };
+    }
+    if (to.meta.accessManagerOnly && !['admin', 'curator'].includes(auth.user?.role ?? '')) {
         return { name: 'dashboard' };
     }
     return true;

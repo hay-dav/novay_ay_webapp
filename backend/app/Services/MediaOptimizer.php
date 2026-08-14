@@ -34,7 +34,9 @@ class MediaOptimizer
             $disk->put($optimizedPath, fopen($output, 'rb'), [
                 'visibility' => $public ? 'public' : 'private',
                 'ContentType' => $this->mimeFor($type),
-                'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'private, no-store',
+                // Keep private S3 visibility and signed CDN access, but allow the
+                // shared CDN edge to cache the optimized media for one hour.
+                'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'public, max-age=0, s-maxage=3600, must-revalidate',
             ]);
 
             return $optimizedPath;

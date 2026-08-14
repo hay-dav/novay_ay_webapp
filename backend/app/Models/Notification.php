@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Events\NotificationCreated;
 use App\Jobs\SendWebPushNotification;
 use Illuminate\Database\Eloquent\Model;
 
@@ -12,7 +13,19 @@ class Notification extends Model
     protected static function booted(): void
     {
         static::created(function (Notification $notification): void {
-            SendWebPushNotification::dispatch($notification->id)->afterCommit();
+            $chatKey = $notification->data['chat_notification_key'] ?? null;
+            $chatPushDisabled = $notification->type === 'chat'
+                && $chatKey
+                && ChatNotificationPreference::query()
+                    ->where('user_id', $notification->user_id)
+                    ->where('chat_key', $chatKey)
+                    ->where('enabled', false)
+                    ->exists();
+
+            if (! $chatPushDisabled) {
+                SendWebPushNotification::dispatch($notification->id)->afterCommit();
+            }
+            NotificationCreated::dispatch($notification);
         });
     }
 

@@ -5,6 +5,7 @@ import { api } from '@/services/api';
 
 const auth = useAuthStore();
 const podcasts = ref([]);
+const searchQuery = ref('');
 const showCreateModal = ref(false);
 const saving = ref(false);
 const errorMessage = ref('');
@@ -12,8 +13,13 @@ const coverPreview = ref('');
 const coverInput = ref(null);
 const audioInput = ref(null);
 const form = ref({ title: '', description: '', cover: null, audio: null, access_level: 'paid' });
-const isAdmin = computed(() => auth.user?.role === 'admin');
 const canManagePodcasts = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
+const filteredPodcasts = computed(() => {
+    const query = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
+    if (!query)
+        return podcasts.value;
+    return podcasts.value.filter((podcast) => podcast.title?.toLocaleLowerCase('ru-RU').includes(query));
+});
 
 async function load() {
     const { data } = await api.get('/podcasts');
@@ -85,16 +91,24 @@ onMounted(load);
   <section class="grid gap-6">
     <header class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div><p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Аудиоматериалы</p><h2 class="mt-2 text-[32px] font-extrabold leading-10">Подкасты</h2><p class="mt-2 text-on-muted">Слушайте полезные разговоры и рекомендации в удобное время.</p></div>
-      <button v-if="isAdmin" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white" type="button" @click="showCreateModal = true"><span class="material-symbols-outlined">add</span>Добавить подкаст</button>
+      <button v-if="canManagePodcasts" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white" type="button" @click="showCreateModal = true"><span class="material-symbols-outlined">add</span>Добавить подкаст</button>
     </header>
 
-    <div v-if="podcasts.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-      <article v-for="podcast in podcasts" :key="podcast.id" class="glass-panel overflow-hidden rounded-[28px]">
+    <label class="relative block w-full sm:max-w-md">
+      <span class="sr-only">Поиск подкастов по названию</span>
+      <span class="material-symbols-outlined pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[21px] text-on-muted">search</span>
+      <input v-model="searchQuery" class="min-h-12 w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-12 pr-12 text-on-surface outline-none transition placeholder:text-on-muted/70 focus:border-primary/50 focus:ring-2 focus:ring-primary/15" type="search" placeholder="Поиск по названию" autocomplete="off" />
+      <button v-if="searchQuery" class="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-xl text-on-muted transition hover:bg-white/5 hover:text-on-surface" type="button" aria-label="Очистить поиск" @click="searchQuery = ''"><span class="material-symbols-outlined text-[19px]">close</span></button>
+    </label>
+
+    <div v-if="filteredPodcasts.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+      <article v-for="podcast in filteredPodcasts" :key="podcast.id" class="glass-panel overflow-hidden rounded-[28px]">
         <img v-if="podcast.cover_path" class="aspect-video w-full object-cover" :src="podcast.cover_path" :alt="podcast.title" />
         <div v-else class="grid aspect-video place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-6xl">headphones</span></div>
         <div class="p-5"><div class="flex items-center justify-between gap-3"><span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">{{ podcast.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}</span><span class="material-symbols-outlined text-primary">graphic_eq</span></div><h3 class="mt-4 text-xl font-extrabold">{{ podcast.title }}</h3><p class="mt-2 text-sm leading-6 text-on-muted">{{ podcast.description }}</p><audio class="mt-5 w-full" :src="podcast.audio_url" controls controlsList="nodownload noplaybackrate" /><button v-if="canManagePodcasts" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 px-4 py-3 text-sm font-extrabold text-red-200 hover:bg-red-500/10" type="button" @click="deletePodcast(podcast)"><span class="material-symbols-outlined text-[20px]">delete</span>Удалить подкаст</button></div>
       </article>
     </div>
+    <div v-else-if="podcasts.length && searchQuery.trim()" class="glass-panel grid min-h-52 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">search_off</span><h3 class="mt-3 text-xl font-extrabold">Подкасты не найдены</h3><p class="mt-2 text-sm text-on-muted">Попробуйте изменить запрос или очистить поиск.</p></div></div>
     <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">headphones</span><h3 class="mt-3 text-xl font-extrabold">Подкастов пока нет</h3><p class="mt-2 text-sm text-on-muted">Новые выпуски появятся здесь.</p></div></div>
 
     <Teleport to="body">

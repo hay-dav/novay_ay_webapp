@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Notification;
 use App\Models\PushSubscription;
+use App\Models\ChatNotificationPreference;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,10 @@ class SendWebPushNotification implements ShouldQueue
     {
         $notification = Notification::query()->find($this->notificationId);
         if (! $notification || ! $this->isConfigured()) {
+            return;
+        }
+        $chatKey = $notification->data['chat_notification_key'] ?? null;
+        if ($notification->type === 'chat' && $chatKey && ChatNotificationPreference::query()->where('user_id', $notification->user_id)->where('chat_key', $chatKey)->where('enabled', false)->exists()) {
             return;
         }
 

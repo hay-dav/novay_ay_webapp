@@ -4,6 +4,7 @@ import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
 import { useLiveStream } from '@/composables/useLiveStream';
 import VideoWatermark from '@/components/VideoWatermark.vue';
+const props = defineProps({ section: { type: String, default: 'workouts' } });
 const auth = useAuthStore();
 const {
     activeStream,
@@ -40,7 +41,8 @@ const {
     switchCamera,
     selectRecordingStage,
     closeLiveModal,
-} = useLiveStream();
+} = useLiveStream({ section: props.section });
+const isExpertSection = computed(() => props.section === 'experts');
 // Keep the host labels below while sharing the same controls with participants.
 const hostMicrophoneEnabled = microphoneEnabled;
 const toggleHostMicrophone = toggleMicrophone;
@@ -81,7 +83,7 @@ const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const canManageWorkouts = computed(() => ['admin', 'curator', 'trainer'].includes(auth.user?.role ?? ''));
 const canDownloadLiveRecordings = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const isAdmin = computed(() => auth.user?.role === 'admin');
-const isClient = computed(() => auth.user?.role === 'client');
+const canWatchLive = computed(() => ['client', 'curator'].includes(auth.user?.role ?? ''));
 const selectedParticipant = computed(() => conferenceParticipants.value
     .find((participant) => participant.identity === selectedParticipantId.value) ?? null);
 watch(selectedParticipant, async (participant) => {
@@ -103,7 +105,7 @@ const workoutFilters = [
 const filteredWorkouts = computed(() => {
     const search = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
 
-    return workouts.value.filter((workout) => (activeFilter.value === 'all' || workout.content_type === activeFilter.value)
+    return workouts.value.filter((workout) => (isExpertSection.value || activeFilter.value === 'all' || workout.content_type === activeFilter.value)
         && (!search || workout.title.toLocaleLowerCase('ru-RU').includes(search)));
 });
 const emptyFilterMessage = computed(() => ({
@@ -112,8 +114,11 @@ const emptyFilterMessage = computed(() => ({
     video: 'Видео-тренировок пока нет. Новые видео появятся здесь после публикации.',
     podcast: 'Подкасты пока не добавлены.',
 }[activeFilter.value]));
+const sectionEmptyMessage = computed(() => isExpertSection.value
+    ? 'Записи экспертных эфиров появятся здесь после завершения трансляции.'
+    : emptyFilterMessage.value);
 async function load() {
-    const { data } = await api.get('/workouts');
+    const { data } = await api.get('/workouts', { params: { section: props.section } });
     workouts.value = data.data;
     completed.value = Object.fromEntries(workouts.value
         .filter((workout) => workout.is_completed)
@@ -463,8 +468,8 @@ onBeforeUnmount(() => {
   <section v-show="!liveModalOpen" class="grid gap-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Тренировки</p>
-        <h2 class="mt-2 text-[32px] font-extrabold leading-10">Видео-тренировки</h2>
+        <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">{{ isExpertSection ? 'Экспертные встречи' : 'Тренировки' }}</p>
+        <h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ isExpertSection ? 'Эфиры с экспертами' : 'Видео-тренировки' }}</h2>
       </div>
       <div class="flex flex-col gap-3 sm:flex-row">
         <button
@@ -487,7 +492,7 @@ onBeforeUnmount(() => {
           Эфир идет
         </button>
         <button
-          v-if="isClient && activeStream"
+          v-if="canWatchLive && activeStream"
           class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-red-500 px-5 py-3 text-sm font-extrabold text-white shadow-[0_10px_30px_rgba(239,68,68,0.22)]"
           type="button"
           :disabled="liveLoading"
@@ -497,7 +502,7 @@ onBeforeUnmount(() => {
           {{ liveLoading ? 'Подключение...' : 'Просмотреть эфир' }}
         </button>
         <button
-          v-if="canManageWorkouts"
+          v-if="canManageWorkouts && !isExpertSection"
           class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white shadow-[0_10px_30px_rgba(109,56,168,0.25)]"
           type="button"
           @click="openModal"
@@ -508,7 +513,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="flex flex-wrap gap-2" role="tablist" aria-label="Фильтры тренировок">
+    <div v-if="!isExpertSection" class="flex flex-wrap gap-2" role="tablist" aria-label="Фильтры тренировок">
       <button
         v-for="filter in workoutFilters.filter((item) => item.value !== 'podcast')"
         :key="filter.value"
@@ -525,13 +530,13 @@ onBeforeUnmount(() => {
     </div>
 
     <label class="relative block">
-      <span class="sr-only">Поиск тренировки по названию</span>
+      <span class="sr-only">Поиск по названию</span>
       <span class="material-symbols-outlined pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-on-muted">search</span>
       <input
         v-model="searchQuery"
         class="min-h-12 w-full rounded-2xl border border-white/10 bg-surface-container py-3 pl-12 pr-4 text-sm text-on-surface outline-none placeholder:text-on-muted focus:border-primary/50 lg:max-w-md"
         type="search"
-        placeholder="Поиск по названию тренировки"
+        :placeholder="isExpertSection ? 'Поиск по названию эфира' : 'Поиск по названию тренировки'"
       />
     </label>
 
@@ -574,7 +579,7 @@ onBeforeUnmount(() => {
             <div class="min-w-0">
               <div class="flex flex-wrap gap-2">
                 <span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">
-                  {{ workout.access_level === 'free' ? 'Бесплатно' : 'Платный доступ' }}
+                  {{ workout.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}
                 </span>
                 <span v-if="workout.content_type === 'live'" class="rounded-full bg-red-500/15 px-3 py-1 text-xs font-bold text-red-200">Запись эфира</span>
               </div>
@@ -586,7 +591,7 @@ onBeforeUnmount(() => {
           </div>
           <p class="mt-3 text-sm leading-6 text-on-muted">{{ workout.description }}</p>
           <button
-            v-if="!canManageWorkouts"
+            v-if="!canManageWorkouts && !isExpertSection"
             class="mt-5 w-full rounded-2xl px-6 py-4 font-extrabold"
             :class="completed[workout.id] ? 'border border-primary/30 text-primary' : 'bg-gradient-to-br from-primary-container to-primary-strong text-white'"
             type="button"
@@ -620,7 +625,7 @@ onBeforeUnmount(() => {
             @click="deleteWorkout(workout)"
           >
             <span class="material-symbols-outlined text-[20px]">delete</span>
-            {{ deletingId === workout.id ? 'Удаление...' : 'Удалить тренировку' }}
+            {{ deletingId === workout.id ? 'Удаление...' : isExpertSection ? 'Удалить запись эфира' : 'Удалить тренировку' }}
           </button>
         </div>
       </article>
@@ -628,9 +633,9 @@ onBeforeUnmount(() => {
 
     <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center">
       <div>
-        <span class="material-symbols-outlined text-[52px] text-primary">{{ activeFilter === 'podcast' ? 'headphones' : activeFilter === 'live' ? 'live_tv' : 'fitness_center' }}</span>
-        <h3 class="mt-3 text-xl font-extrabold">{{ activeFilter === 'podcast' ? 'Подкастов пока нет' : activeFilter === 'live' ? 'Записей эфиров пока нет' : 'Видео-тренировок пока нет' }}</h3>
-        <p class="mt-2 text-sm text-on-muted">{{ emptyFilterMessage }}</p>
+        <span class="material-symbols-outlined text-[52px] text-primary">{{ isExpertSection ? 'live_tv' : activeFilter === 'podcast' ? 'headphones' : activeFilter === 'live' ? 'live_tv' : 'fitness_center' }}</span>
+        <h3 class="mt-3 text-xl font-extrabold">{{ isExpertSection ? 'Эфиров с экспертами пока нет' : activeFilter === 'podcast' ? 'Подкастов пока нет' : activeFilter === 'live' ? 'Записей эфиров пока нет' : 'Видео-тренировок пока нет' }}</h3>
+        <p class="mt-2 text-sm text-on-muted">{{ sectionEmptyMessage }}</p>
       </div>
     </div>
   </section>

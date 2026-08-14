@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class LiveStream extends Model
 {
-    protected $fillable = ['host_id', 'recording_workout_id', 'recording_title', 'recording_description', 'recording_access_level', 'room_name', 'status', 'started_at', 'ended_at', 'host_heartbeat_at', 'guest_token', 'guest_enabled', 'guest_expires_at', 'participants_enabled', 'egress_id', 'egress_path', 'egress_status'];
+    protected $fillable = ['host_id', 'recording_workout_id', 'recording_title', 'recording_description', 'recording_access_level', 'room_name', 'status', 'started_at', 'ended_at', 'host_heartbeat_at', 'guest_token', 'guest_enabled', 'guest_expires_at', 'participants_enabled', 'egress_id', 'egress_path', 'egress_status', 'section'];
 
     protected function casts(): array
     {

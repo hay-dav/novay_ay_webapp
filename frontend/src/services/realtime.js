@@ -8,6 +8,9 @@ export function createRealtimeClient(token) {
     return new Echo({
         broadcaster: 'pusher',
         key: import.meta.env.VITE_WS_KEY ?? 'local',
+        // Pusher JS validates this field even when the connection is routed to
+        // our self-hosted Soketi instance via wsHost.
+        cluster: import.meta.env.VITE_WS_CLUSTER ?? 'mt1',
         wsHost: import.meta.env.VITE_WS_HOST ?? 'localhost',
         wsPort: Number(import.meta.env.VITE_WS_PORT ?? 6001),
         wssPort: Number(import.meta.env.VITE_WS_PORT ?? 443),

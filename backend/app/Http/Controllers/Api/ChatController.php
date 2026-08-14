@@ -4,257 +4,347 @@ namespace App\Http\Controllers\Api;
 
 use App\Jobs\OptimizeStoredMedia;
 use App\Models\ChatMessage;
+use App\Models\ChatNotificationPreference;
+use App\Models\ChatRoom;
+use App\Models\ChatRoomRead;
 use App\Models\Notification;
 use App\Models\User;
 use App\Services\MediaStorage;
+use App\Services\MediaOptimizer;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Storage;
 
 class ChatController extends Controller
 {
+    private const CHAT_CURATOR_ID = 10;
+
     public function peers(Request $request)
     {
         $user = $request->user();
-        if ($this->isStaff($request->user())) {
+        if ($this->isStaff($user) || $this->isChatCurator($user)) {
             $peers = User::query()
                 ->where('role', 'client')
-                ->when(! in_array($request->user()->role->value, ['admin', 'curator'], true), fn ($query) => $query->whereHas(
-                    'clientProfile',
-                    fn ($profile) => $profile->where('trainer_id', $request->user()->id),
+                ->when(! $this->isChatCurator($user) && ! in_array($user->role->value, ['admin', 'curator'], true), fn ($query) => $query->whereHas(
+                    'clientProfile', fn ($profile) => $profile->where('trainer_id', $user->id),
                 ))
                 ->orderBy('name')
                 ->get(['id', 'name', 'role', 'avatar_path']);
         } else {
-            $peers = User::query()
-                ->whereIn('role', ['curator', 'admin'])
-                ->orderByRaw("CASE WHEN role = 'curator' THEN 0 ELSE 1 END")
-                ->get(['id', 'name', 'role', 'avatar_path']);
+            $peers = $this->supportTeam();
         }
 
         $media = app(MediaStorage::class);
         $unreadBySender = ChatMessage::query()
-            ->where('recipient_id', $user->id)
-            ->whereNull('read_at')
-            ->selectRaw('sender_id, count(*) as unread_count')
-            ->groupBy('sender_id')
-            ->pluck('unread_count', 'sender_id');
+            ->whereNull('chat_room_id')->where('recipient_id', $user->id)->whereNull('read_at')
+            ->selectRaw('sender_id, count(*) as unread_count')->groupBy('sender_id')->pluck('unread_count', 'sender_id');
 
-        $peers->each(function (User $peer) use ($media, $unreadBySender): void {
-            if ($peer->avatar_path) {
-                $peer->setAttribute('avatar_path', $media->secureCdnUrl($peer->avatar_path));
-            }
+        $peers->each(function (User $peer) use ($media, $unreadBySender, $user): void {
+            if ($peer->avatar_path) $peer->setAttribute('avatar_path', $media->secureCdnUrl($peer->avatar_path));
             $peer->setAttribute('unread_count', (int) ($unreadBySender[$peer->id] ?? 0));
+            $last = ChatMessage::query()->whereNull('chat_room_id')
+                ->where(fn ($q) => $q->where(fn ($i) => $i->where('sender_id', $user->id)->where('recipient_id', $peer->id))
+                    ->orWhere(fn ($i) => $i->where('sender_id', $peer->id)->where('recipient_id', $user->id)))
+                ->latest()->first(['id', 'body', 'attachment_type', 'created_at']);
+            $peer->setAttribute('last_message', $last ? $this->preview($last) : null);
+            $peer->setAttribute('last_message_at', $last?->created_at);
         });
 
-        return response()->json(['data' => $peers]);
+        return response()->json(['data' => $peers->values()]);
+    }
+
+    public function general(Request $request)
+    {
+        return $this->roomOverview($request, $this->generalRoom());
+    }
+
+    public function important(Request $request)
+    {
+        return $this->roomOverview($request, $this->importantRoom());
+    }
+
+    private function roomOverview(Request $request, ChatRoom $room)
+    {
+        $last = $room->messages()->latest()->first(['id', 'body', 'attachment_type', 'created_at']);
+        $read = ChatRoomRead::query()->where('chat_room_id', $room->id)->where('user_id', $request->user()->id)->value('last_read_message_id') ?? 0;
+        $unread = $room->messages()->where('id', '>', $read)->where('sender_id', '!=', $request->user()->id)->count();
+
+        return response()->json(['data' => [
+            'id' => $room->id, 'slug' => $room->slug, 'name' => $room->name,
+            'last_message' => $last ? $this->preview($last) : null,
+            'last_message_at' => $last?->created_at, 'unread_count' => $unread,
+        ]]);
+    }
+
+    public function generalMessages(Request $request)
+    {
+        return $this->roomMessages($request, $this->generalRoom());
+    }
+
+    public function importantMessages(Request $request)
+    {
+        return $this->roomMessages($request, $this->importantRoom());
+    }
+
+    private function roomMessages(Request $request, ChatRoom $room)
+    {
+        $messages = $room->messages()->with($this->messageRelations())->latest()->limit(100)->get()->reverse()->values();
+        $lastId = $messages->last()?->id;
+        // A read receipt belongs only to the current user. Polling the chat must
+        // never change it: otherwise an unread badge can vanish without the user
+        // intentionally opening the conversation.
+        if ($lastId && $request->boolean('mark_read')) ChatRoomRead::query()->updateOrCreate(
+            ['chat_room_id' => $room->id, 'user_id' => $request->user()->id],
+            ['last_read_message_id' => $lastId],
+        );
+
+        return response()->json(['data' => $this->decorateMessages($messages)]);
     }
 
     public function index(Request $request)
     {
-        if ($request->filled(['participant_a_id', 'participant_b_id'])) {
-            return $this->conversation($request);
-        }
-
+        if ($request->filled(['participant_a_id', 'participant_b_id'])) return $this->conversation($request);
         $peer = $this->resolvePeer($request, $request->integer('peer_id') ?: null);
-        if (! $peer) {
-            return response()->json(['data' => []]);
-        }
+        if (! $peer) return response()->json(['data' => []]);
 
-        ChatMessage::query()
-            ->where('sender_id', $peer->id)
-            ->where('recipient_id', $request->user()->id)
-            ->whereNull('read_at')
-            ->update(['read_at' => now()]);
-
-        $messages = ChatMessage::query()
-            ->where(function ($conversation) use ($request, $peer): void {
-                $conversation
-                    ->where(function ($inner) use ($request, $peer): void {
-                        $inner->where('sender_id', $request->user()->id)->where('recipient_id', $peer->id);
-                    })
-                    ->orWhere(function ($inner) use ($request, $peer): void {
-                        $inner->where('sender_id', $peer->id)->where('recipient_id', $request->user()->id);
-                    });
-            })
-            ->with('sender:id,name')
-            ->latest()
-            ->limit(100)
-            ->get()
-            ->reverse()
-            ->values();
-
-        $media = app(MediaStorage::class);
-        $messages->each(function (ChatMessage $message) use ($media): void {
-            if ($message->attachment_path) {
-                $message->setAttribute('attachment_path', $media->secureCdnUrl($message->attachment_path));
-            }
-        });
-
-        return response()->json(['data' => $messages]);
+        ChatMessage::query()->whereNull('chat_room_id')->where('sender_id', $peer->id)->where('recipient_id', $request->user()->id)->whereNull('read_at')->update(['read_at' => now()]);
+        $messages = ChatMessage::query()->whereNull('chat_room_id')
+            ->where(fn ($q) => $q->where(fn ($i) => $i->where('sender_id', $request->user()->id)->where('recipient_id', $peer->id))
+                ->orWhere(fn ($i) => $i->where('sender_id', $peer->id)->where('recipient_id', $request->user()->id)))
+            ->with($this->messageRelations())->latest()->limit(100)->get()->reverse()->values();
+        return response()->json(['data' => $this->decorateMessages($messages)]);
     }
 
     public function unreadCount(Request $request)
     {
-        return response()->json([
-            'data' => [
-                'count' => ChatMessage::query()
-                    ->where('recipient_id', $request->user()->id)
-                    ->whereNull('read_at')
-                    ->count(),
-            ],
-        ]);
+        $user = $request->user();
+        $directUnread = ChatMessage::query()->whereNull('chat_room_id')->where('recipient_id', $user->id)->whereNull('read_at')->count();
+        $roomUnread = collect([$this->generalRoom(), $this->importantRoom()])->sum(function (ChatRoom $room) use ($user): int {
+            $lastReadId = ChatRoomRead::query()->where('chat_room_id', $room->id)->where('user_id', $user->id)->value('last_read_message_id') ?? 0;
+            return $room->messages()->where('id', '>', $lastReadId)->where('sender_id', '!=', $user->id)->count();
+        });
+
+        return response()->json(['data' => ['count' => $directUnread + $roomUnread]]);
     }
 
     public function conversations(Request $request)
     {
         abort_unless($request->user()->role->value === 'admin', 403);
-
-        $latestMessageIds = ChatMessage::query()
+        $ids = ChatMessage::query()->whereNull('chat_room_id')
             ->selectRaw('DISTINCT ON (LEAST(sender_id, recipient_id), GREATEST(sender_id, recipient_id)) id')
-            ->orderByRaw('LEAST(sender_id, recipient_id)')
-            ->orderByRaw('GREATEST(sender_id, recipient_id)')
-            ->orderByDesc('created_at');
-
-        $media = app(MediaStorage::class);
-        $conversations = ChatMessage::query()
-            ->whereIn('id', $latestMessageIds)
-            ->with([
-                'sender:id,name,role,avatar_path',
-                'recipient:id,name,role,avatar_path',
-            ])
-            ->latest()
-            ->get()
-            ->map(function (ChatMessage $message) use ($media): ChatMessage {
-                foreach ([$message->sender, $message->recipient] as $participant) {
-                    if ($participant?->avatar_path) {
-                        $participant->setAttribute('avatar_path', $media->secureCdnUrl($participant->avatar_path));
-                    }
-                }
-
-                if ($message->attachment_path) {
-                    $message->setAttribute('attachment_path', $media->secureCdnUrl($message->attachment_path));
-                }
-
-                return $message;
-            })
-            ->values();
-
-        return response()->json(['data' => $conversations]);
+            ->orderByRaw('LEAST(sender_id, recipient_id)')->orderByRaw('GREATEST(sender_id, recipient_id)')->orderByDesc('created_at');
+        $conversations = ChatMessage::query()->whereIn('id', $ids)->with($this->conversationRelations())->latest()->get();
+        return response()->json(['data' => $this->decorateConversations($conversations)]);
     }
 
-    public function store(Request $request, MediaStorage $media)
+    public function curatorConversations(Request $request)
+    {
+        abort_unless($request->user()->role->value === 'admin', 403);
+        $curator = User::query()->find(self::CHAT_CURATOR_ID, ['id']);
+        if (! $curator) return response()->json(['data' => []]);
+
+        $messages = ChatMessage::query()->whereNull('chat_room_id')
+            ->where(fn ($query) => $query->where('sender_id', $curator->id)->orWhere('recipient_id', $curator->id))
+            ->with($this->conversationRelations())
+            ->latest()->get()
+            ->groupBy(fn (ChatMessage $message) => min($message->sender_id, $message->recipient_id).'-'.max($message->sender_id, $message->recipient_id))
+            ->map->first()->values();
+
+        return response()->json(['data' => $this->decorateConversations($messages)]);
+    }
+
+    public function store(Request $request, MediaStorage $media, MediaOptimizer $optimizer)
     {
         $validated = $request->validate([
-            'recipient_id' => ['nullable', 'integer', 'exists:users,id'],
+            'room_slug' => ['nullable', 'string', 'in:general,important-info'],
+            'reply_to_id' => ['nullable', 'integer', 'exists:chat_messages,id'],
+            'recipient_id' => ['nullable', 'integer', 'exists:users,id', 'required_without:room_slug'],
             'body' => ['nullable', 'string', 'max:2000', 'required_without_all:photo,voice'],
             'photo' => ['nullable', 'image', 'max:10240', 'required_without_all:body,voice'],
-            // Safari commonly records an audio/mp4 file, while Chrome uses
-            // audio/webm. Validate the detected media type rather than a
-            // narrow extension list so voice messages work on both platforms.
             'voice' => ['nullable', 'file', 'mimetypes:audio/*,video/webm,application/ogg', 'max:25600', 'required_without_all:body,photo'],
         ]);
-        $recipient = $this->resolvePeer($request, $validated['recipient_id'] ?? null);
-        abort_unless($recipient, 422, 'Выберите собеседника.');
+        $attachmentPath = null; $attachmentType = null;
+        if ($request->hasFile('photo')) { $attachmentPath = $media->store($request->file('photo'), 'chat/photos'); $attachmentType = 'photo'; }
+        elseif ($request->hasFile('voice')) { $attachmentPath = $media->store($request->file('voice'), 'chat/voice'); $attachmentType = 'voice'; }
 
-        $attachmentPath = null;
-        $attachmentType = null;
-        if ($request->hasFile('photo')) {
-            $attachmentPath = $media->store($request->file('photo'), 'chat/photos');
-            $attachmentType = 'photo';
-        } elseif ($request->hasFile('voice')) {
-            $attachmentPath = $media->store($request->file('voice'), 'chat/voice');
-            $attachmentType = 'voice';
+        if (filled($validated['room_slug'] ?? null)) {
+            $room = ($validated['room_slug'] ?? null) === 'important-info' ? $this->importantRoom() : $this->generalRoom();
+            abort_if($room->slug === 'important-info' && $request->user()->role->value !== 'admin', 403, 'Только администратор может публиковать важную информацию.');
+            $message = ChatMessage::query()->create(['chat_room_id' => $room->id, 'reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
+            $senderName = $request->user()->name;
+            User::query()->where('id', '!=', $request->user()->id)->whereNull('blocked_at')->whereNull('archived_at')->eachById(function (User $recipient) use ($message, $senderName, $attachmentType, $room): void {
+                Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => $room->name.': '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'room_slug' => $room->slug, 'chat_notification_key' => 'room:'.$room->slug]]);
+            });
+        } else {
+            $recipient = $this->resolvePeer($request, $validated['recipient_id']);
+            abort_unless($recipient, 422, 'Выберите собеседника.');
+            $message = ChatMessage::query()->create(['reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'recipient_id' => $recipient->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
+            $senderName = $this->isChatCurator($request->user()) ? 'Куратор' : $request->user()->name;
+            Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => 'Новое сообщение от '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'sender_id' => $request->user()->id, 'chat_notification_key' => 'direct:'.$request->user()->id]]);
         }
+        // iOS Safari does not play WebM voice records. Transcode voice notes
+        // before returning the message so every client receives a playable M4A
+        // immediately, rather than waiting for the background media worker.
+        if ($attachmentType === 'voice' && $attachmentPath) {
+            $optimizedPath = $optimizer->optimize($attachmentPath, 'audio');
+            if ($optimizedPath) {
+                Storage::disk('s3')->delete($attachmentPath);
+                $attachmentPath = $optimizedPath;
+                $message->forceFill(['attachment_path' => $optimizedPath])->save();
+            }
+        }
+        if ($attachmentPath && $attachmentType === 'photo') OptimizeStoredMedia::dispatch(ChatMessage::class, $message->id, 'attachment_path', $attachmentPath, 'image');
+        $message->load($this->messageRelations());
+        return response()->json(['data' => $this->decorateMessage($message)], 201);
+    }
 
-        $message = ChatMessage::query()->create([
-            'sender_id' => $request->user()->id,
-            'recipient_id' => $recipient->id,
-            'body' => $validated['body'] ?? '',
-            'attachment_path' => $attachmentPath,
-            'attachment_type' => $attachmentType,
+    public function update(Request $request, ChatMessage $chatMessage)
+    {
+        abort_unless($chatMessage->sender_id === $request->user()->id, 403);
+        abort_if($chatMessage->attachment_type && ! $chatMessage->body, 422, 'Нельзя заменить вложение текстом.');
+        $data = $request->validate(['body' => ['required', 'string', 'max:2000']]);
+        $chatMessage->update(['body' => $data['body'], 'edited_at' => now()]);
+        $chatMessage->load($this->messageRelations());
+        return response()->json(['data' => $this->decorateMessage($chatMessage)]);
+    }
+
+    public function toggleReaction(Request $request, ChatMessage $chatMessage)
+    {
+        $data = $request->validate(['emoji' => ['required', 'string', 'max:16']]);
+        $reaction = $chatMessage->reactions()->where('user_id', $request->user()->id)->where('emoji', $data['emoji'])->first();
+        if ($reaction) $reaction->delete();
+        else $chatMessage->reactions()->create(['user_id' => $request->user()->id, 'emoji' => $data['emoji']]);
+        $chatMessage->load($this->messageRelations());
+        return response()->json(['data' => $this->decorateMessage($chatMessage)]);
+    }
+
+    public function mentionables(Request $request)
+    {
+        $users = User::query()
+            ->whereNull('blocked_at')
+            ->whereNull('archived_at')
+            ->orderBy('name')
+            ->get(['id', 'name', 'avatar_path']);
+        $media = app(MediaStorage::class);
+        $users->each(function (User $user) use ($media): void {
+            if ($user->avatar_path) $user->setAttribute('avatar_path', $media->secureCdnUrl($user->avatar_path));
+        });
+
+        return response()->json(['data' => $users]);
+    }
+
+    public function notificationPreferences(Request $request)
+    {
+        return response()->json(['data' => ChatNotificationPreference::query()->where('user_id', $request->user()->id)->pluck('enabled', 'chat_key')]);
+    }
+
+    public function updateNotificationPreference(Request $request)
+    {
+        $data = $request->validate([
+            'chat_key' => ['required', 'string', 'max:80', 'regex:/^(room:(general|important-info)|direct:[1-9][0-9]*)$/'],
+            'enabled' => ['required', 'boolean'],
         ]);
-        if ($attachmentPath && $attachmentType) {
-            OptimizeStoredMedia::dispatch(
-                ChatMessage::class,
-                $message->id,
-                'attachment_path',
-                $attachmentPath,
-                $attachmentType === 'photo' ? 'image' : 'audio',
-            );
+        if (str_starts_with($data['chat_key'], 'direct:')) {
+            $peer = $this->resolvePeer($request, (int) substr($data['chat_key'], 7));
+            abort_unless($peer, 422, 'Недоступный чат.');
         }
+        ChatNotificationPreference::query()->updateOrCreate(
+            ['user_id' => $request->user()->id, 'chat_key' => $data['chat_key']],
+            ['enabled' => $data['enabled']],
+        );
 
-        Notification::query()->create([
-            'user_id' => $recipient->id,
-            'type' => 'chat',
-            'title' => 'Новое сообщение от '.$request->user()->name,
-            'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'),
-            'data' => ['chat_message_id' => $message->id, 'sender_id' => $request->user()->id],
-        ]);
-
-        $message->load('sender:id,name');
-        if ($message->attachment_path) {
-            $message->setAttribute('attachment_path', $media->secureCdnUrl($message->attachment_path));
-        }
-
-        return response()->json(['data' => $message], 201);
+        return response()->json(['data' => ['chat_key' => $data['chat_key'], 'enabled' => (bool) $data['enabled']]]);
     }
 
     private function resolvePeer(Request $request, ?int $peerId): ?User
     {
-        if ($this->isStaff($request->user())) {
-            return User::query()
-                ->where('role', 'client')
-                ->when(! in_array($request->user()->role->value, ['admin', 'curator'], true), fn ($query) => $query->whereHas(
-                    'clientProfile',
-                    fn ($profile) => $profile->where('trainer_id', $request->user()->id),
-                ))
-                ->when($peerId, fn ($query) => $query->whereKey($peerId))
-                ->orderBy('name')
-                ->first();
-        }
+        $user = $request->user();
+        if ($this->isStaff($user) || $this->isChatCurator($user)) return User::query()->where('role', 'client')->when(! $this->isChatCurator($user) && ! in_array($user->role->value, ['admin', 'curator'], true), fn ($q) => $q->whereHas('clientProfile', fn ($p) => $p->where('trainer_id', $user->id)))->when($peerId, fn ($q) => $q->whereKey($peerId))->orderBy('name')->first();
+        return $this->supportTeam()->first(fn (User $peer) => ! $peerId || $peer->id === $peerId);
+    }
 
-        return User::query()
-            ->whereIn('role', ['curator', 'admin'])
-            ->when($peerId, fn ($query) => $query->whereKey($peerId))
-            ->orderByRaw("CASE WHEN role = 'curator' THEN 0 ELSE 1 END")
-            ->first();
+    private function supportTeam()
+    {
+        // The account was created before the profile-name normalisation, so
+        // its stored name may be ordered differently. There is one support
+        // administrator exposed in personal chats; always present it under
+        // the agreed public name.
+        $admin = User::query()->where('role', 'admin')->orderBy('id')->first(['id', 'name', 'role', 'avatar_path']);
+        $curator = User::query()->find(self::CHAT_CURATOR_ID, ['id', 'name', 'role', 'avatar_path']);
+        $team = collect([$admin, $curator])->filter()->unique('id')->values();
+        $team->each(function (User $member) use ($admin, $curator): void {
+            if ($admin && $member->id === $admin->id) $member->setAttribute('name', 'Лазарева Анастасия');
+            if ($curator && $member->id === $curator->id) {
+                $member->setAttribute('name', 'Куратор');
+                $member->setAttribute('avatar_path', null);
+            }
+        });
+        return $team;
+    }
+
+    private function generalRoom(): ChatRoom
+    {
+        return ChatRoom::query()->firstOrCreate(['slug' => 'general'], ['name' => 'Общий чат']);
+    }
+
+    private function importantRoom(): ChatRoom
+    {
+        return ChatRoom::query()->firstOrCreate(['slug' => 'important-info'], ['name' => 'Важная ИНФА']);
     }
 
     private function conversation(Request $request)
     {
         abort_unless($request->user()->role->value === 'admin', 403);
+        $data = $request->validate(['participant_a_id' => ['required', 'integer', 'different:participant_b_id', 'exists:users,id'], 'participant_b_id' => ['required', 'integer', 'exists:users,id']]);
+        $messages = ChatMessage::query()->whereNull('chat_room_id')->where(fn ($q) => $q->where(fn ($i) => $i->where('sender_id', $data['participant_a_id'])->where('recipient_id', $data['participant_b_id']))->orWhere(fn ($i) => $i->where('sender_id', $data['participant_b_id'])->where('recipient_id', $data['participant_a_id'])))->with($this->messageRelations())->latest()->limit(100)->get()->reverse()->values();
+        return response()->json(['data' => $this->decorateMessages($messages)]);
+    }
 
-        $validated = $request->validate([
-            'participant_a_id' => ['required', 'integer', 'different:participant_b_id', 'exists:users,id'],
-            'participant_b_id' => ['required', 'integer', 'exists:users,id'],
-        ]);
+    private function decorateMessages($messages)
+    {
+        return $messages->map(fn (ChatMessage $message) => $this->decorateMessage($message))->values();
+    }
 
-        $messages = ChatMessage::query()
-            ->where(function ($query) use ($validated): void {
-                $query
-                    ->where('sender_id', $validated['participant_a_id'])
-                    ->where('recipient_id', $validated['participant_b_id']);
-            })
-            ->orWhere(function ($query) use ($validated): void {
-                $query
-                    ->where('sender_id', $validated['participant_b_id'])
-                    ->where('recipient_id', $validated['participant_a_id']);
-            })
-            ->with('sender:id,name')
-            ->latest()
-            ->limit(100)
-            ->get()
-            ->reverse()
-            ->values();
+    private function decorateMessage(ChatMessage $message): ChatMessage
+    {
+        if ($message->attachment_path) $message->setAttribute('attachment_path', app(MediaStorage::class)->secureCdnUrl($message->attachment_path));
+        $this->decorateParticipant($message->sender, $message->chat_room_id === null);
+        if ($message->replyTo) $this->decorateParticipant($message->replyTo->sender, $message->chat_room_id === null);
+        return $message;
+    }
 
-        $media = app(MediaStorage::class);
-        $messages->each(function (ChatMessage $message) use ($media): void {
-            if ($message->attachment_path) {
-                $message->setAttribute('attachment_path', $media->secureCdnUrl($message->attachment_path));
-            }
-        });
+    private function decorateConversations($conversations)
+    {
+        return $conversations->map(function (ChatMessage $message): ChatMessage {
+            foreach ([$message->sender, $message->recipient] as $participant) $this->decorateParticipant($participant, true);
+            return $this->decorateMessage($message);
+        })->values();
+    }
 
-        return response()->json(['data' => $messages]);
+    private function decorateParticipant(?User $participant, bool $isDirectChat): void
+    {
+        if (! $participant) return;
+        if ($isDirectChat && (int) $participant->id === self::CHAT_CURATOR_ID) {
+            $participant->setAttribute('name', 'Куратор');
+            $participant->setAttribute('avatar_path', null);
+            return;
+        }
+        if ($participant->avatar_path) $participant->setAttribute('avatar_path', app(MediaStorage::class)->secureCdnUrl($participant->avatar_path));
+    }
+
+    private function messageRelations(): array
+    {
+        return ['sender:id,name,avatar_path', 'replyTo.sender:id,name,avatar_path', 'reactions.user:id,name'];
+    }
+
+    private function conversationRelations(): array
+    {
+        return ['sender:id,name,role,avatar_path', 'recipient:id,name,role,avatar_path'];
+    }
+
+    private function preview(ChatMessage $message): string
+    {
+        return $message->body ?: ($message->attachment_type === 'voice' ? 'Голосовое сообщение' : 'Фото');
     }
 
     private function isStaff(User $user): bool
@@ -262,4 +352,12 @@ class ChatController extends Controller
         return in_array($user->role->value, ['curator', 'trainer', 'admin'], true);
     }
 
+    /**
+     * Chat-only access for Anna Averyanova. Her application role deliberately
+     * remains client; this exception must not grant rights outside chat.
+     */
+    private function isChatCurator(User $user): bool
+    {
+        return (int) $user->id === self::CHAT_CURATOR_ID;
+    }
 }

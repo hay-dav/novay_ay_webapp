@@ -81,6 +81,7 @@ class FinalizeLiveEgressRecording implements ShouldQueue
                 'duration_seconds' => max(0, $lockedStream->started_at->diffInSeconds($lockedStream->ended_at ?? now())),
                 'timer_seconds' => 45,
                 'access_level' => $lockedStream->recording_access_level ?: 'paid',
+                'section' => $lockedStream->section,
             ]);
             $lockedStream->forceFill([
                 'recording_workout_id' => $workout->id,
@@ -106,8 +107,8 @@ class FinalizeLiveEgressRecording implements ShouldQueue
                 'user_id' => $user->id,
                 'type' => 'workout',
                 'title' => 'Доступна запись эфира',
-                'body' => 'Запись завершённого эфира добавлена в раздел «Тренировки».',
-                'data' => ['workout_id' => $workout->id],
+                'body' => 'Запись завершённого эфира добавлена в раздел '.($stream->section === 'experts' ? '«Эфиры с экспертами».' : '«Тренировки».'),
+                'data' => ['workout_id' => $workout->id, 'link_url' => $stream->section === 'experts' ? '/expert-lives' : '/workouts'],
             ]),
         );
     }

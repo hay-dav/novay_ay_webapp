@@ -29,8 +29,9 @@ class LiveStreamController extends Controller
     {
     }
 
-    public function active()
+    public function active(Request $request)
     {
+        $section = $request->validate(['section' => ['nullable', 'in:workouts,experts']])['section'] ?? 'workouts';
         // Browsers can delay background requests for tens of seconds, especially
         // on mobile devices. Do not terminate a healthy LiveKit session because
         // of a short heartbeat gap.
@@ -50,6 +51,7 @@ class LiveStreamController extends Controller
 
         $stream = LiveStream::query()
             ->where('status', 'live')
+            ->where('section', $section)
             ->with('host:id,name')
             ->latest('started_at')
             ->first();
@@ -64,6 +66,7 @@ class LiveStreamController extends Controller
             'title' => ['required', 'string', 'max:255'],
             'description' => ['required', 'string', 'max:5000'],
             'access_level' => ['nullable', 'in:free,paid'],
+            'section' => ['nullable', 'in:workouts,experts'],
         ]);
 
         $previousStreams = LiveStream::query()
@@ -85,13 +88,18 @@ class LiveStreamController extends Controller
             'recording_access_level' => $validated['access_level'] ?? 'paid',
             'started_at' => now(),
             'host_heartbeat_at' => now(),
+            'section' => $validated['section'] ?? 'workouts',
         ]);
         $stream->update(['room_name' => 'novaya-ya-live-'.$stream->id]);
 
         try {
-            // Create the room first. Egress is started by a separate endpoint
-            // after the trainer has connected and published the camera track.
             $this->egress->createRoom($stream->room_name);
+            $recording = $this->egress->startRoomComposite($stream);
+            $stream->update([
+                'egress_id' => $recording['id'],
+                'egress_path' => $recording['path'],
+                'egress_status' => 'EGRESS_STARTING',
+            ]);
         } catch (\Throwable $exception) {
             $stream->update(['status' => 'ended', 'ended_at' => now(), 'host_heartbeat_at' => null]);
             Log::error('Could not start server-side live recording', ['stream_id' => $stream->id, 'exception' => $exception]);
@@ -105,8 +113,8 @@ class LiveStreamController extends Controller
                 'user_id' => $user->id,
                 'type' => 'live_stream',
                 'title' => 'Прямой эфир начался',
-                'body' => 'Анастасия начала прямую трансляцию. Подключайтесь в разделе «Тренировки».',
-                'data' => ['live_stream_id' => $stream->id, 'link_url' => '/workouts'],
+                'body' => 'Началась прямая трансляция. Подключайтесь в разделе '.($stream->section === 'experts' ? '«Эфиры с экспертами».' : '«Тренировки».'),
+                'data' => ['live_stream_id' => $stream->id, 'link_url' => $stream->section === 'experts' ? '/expert-lives' : '/workouts'],
             ]));
 
         return response()->json(['data' => $stream], 201);
@@ -175,11 +183,12 @@ class LiveStreamController extends Controller
 
         $user = $request->user();
         $isHost = $user->role->value === 'admin' && $stream->host_id === $user->id;
-        $isViewer = $user->role->value === 'client' && $user->access_status === 'paid';
+        $isViewer = $user->role->value === 'curator'
+            || ($user->role->value === 'client' && $user->access_status === 'paid');
         abort_unless(
             $isHost || $isViewer,
             403,
-            'Эфир доступен только платным пользователям',
+            'Эфир доступен только кураторам и пользователям с полным доступом',
         );
 
         if ($isViewer) {
@@ -336,6 +345,7 @@ class LiveStreamController extends Controller
             'duration_seconds' => $validated['duration_seconds'] ?? max(0, $stream->started_at->diffInSeconds($stream->ended_at ?? now())),
             'timer_seconds' => 45,
             'access_level' => $stream->recording_access_level ?: 'paid',
+            'section' => $stream->section,
         ]);
         OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
 
@@ -353,8 +363,8 @@ class LiveStreamController extends Controller
                 'user_id' => $user->id,
                 'type' => 'workout',
                 'title' => 'Доступна запись эфира',
-                'body' => 'Запись завершенного эфира добавлена в раздел «Тренировки».',
-                'data' => ['workout_id' => $workout->id],
+                'body' => 'Запись завершенного эфира добавлена в раздел '.($stream->section === 'experts' ? '«Эфиры с экспертами».' : '«Тренировки».'),
+                'data' => ['workout_id' => $workout->id, 'link_url' => $stream->section === 'experts' ? '/expert-lives' : '/workouts'],
             ]));
 
         return response()->json(['data' => $workout], 201);
@@ -416,6 +426,7 @@ class LiveStreamController extends Controller
             'duration_seconds' => $validated['duration_seconds'] ?? max(0, $stream->started_at->diffInSeconds($stream->ended_at ?? now())),
             'timer_seconds' => 45,
             'access_level' => $stream->recording_access_level ?: 'paid',
+            'section' => $stream->section,
         ]);
         OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
 
@@ -433,8 +444,8 @@ class LiveStreamController extends Controller
                 'user_id' => $user->id,
                 'type' => 'workout',
                 'title' => 'Доступна запись эфира',
-                'body' => 'Запись завершённого эфира добавлена в раздел «Тренировки».',
-                'data' => ['workout_id' => $workout->id],
+                'body' => 'Запись завершённого эфира добавлена в раздел '.($stream->section === 'experts' ? '«Эфиры с экспертами».' : '«Тренировки».'),
+                'data' => ['workout_id' => $workout->id, 'link_url' => $stream->section === 'experts' ? '/expert-lives' : '/workouts'],
             ]));
 
         return response()->json(['data' => $workout], 201);

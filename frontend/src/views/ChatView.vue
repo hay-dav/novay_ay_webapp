@@ -4,320 +4,361 @@ import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
-const messages = ref([]);
 const peers = ref([]);
-const conversations = ref([]);
-const selectedPeerId = ref(null);
-const selectedConversationId = ref(null);
-const chatMode = ref('direct');
+const general = ref(null);
+const important = ref(null);
+const curatorConversations = ref([]);
+const showCuratorConversations = ref(false);
+const searchQuery = ref('');
+const messages = ref([]);
+const messagesLoading = ref(false);
+const activeChat = ref({ type: 'general', peerId: null });
+const mobileListOpen = ref(true);
 const body = ref('');
+const replyTo = ref(null);
+const editingMessage = ref(null);
+const contextMessage = ref(null);
+const mentionables = ref([]);
 const listRef = ref(null);
 const photoInput = ref(null);
 const activePhoto = ref(null);
 const sending = ref(false);
 const recording = ref(false);
 const chatError = ref('');
-let mediaRecorder;
-let recordingStream;
-let audioChunks = [];
-let refreshTimer;
+const chatPushChanging = ref(false);
+const chatPushPreferences = ref({});
+const hiddenMessageAvatarIds = ref(new Set());
+let mediaRecorder; let recordingStream; let audioChunks = []; let messagePressTimer;
+let messagesRequestId = 0;
 
-const isStaff = computed(() => auth.isTrainer);
+const isGeneral = computed(() => activeChat.value.type === 'general');
+const isImportant = computed(() => activeChat.value.type === 'important');
+const isRoom = computed(() => isGeneral.value || isImportant.value);
+const activeRoom = computed(() => isImportant.value ? important.value : general.value);
+const activeRoomSlug = computed(() => isImportant.value ? 'important-info' : 'general');
 const isAdmin = computed(() => auth.user?.role === 'admin');
-const isConversationMode = computed(() => isAdmin.value && chatMode.value === 'all');
-const selectedPeer = computed(() => peers.value.find((peer) => peer.id === selectedPeerId.value) ?? null);
-const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value) ?? null);
-const hasPeerList = computed(() => isConversationMode.value || isStaff.value || peers.value.length > 1);
-const selectedParticipantIds = computed(() => {
-    if (!selectedConversation.value)
-        return null;
-    return [selectedConversation.value.sender_id, selectedConversation.value.recipient_id];
-});
-const chatTitle = computed(() => isConversationMode.value ? 'Все чаты' : (isStaff.value ? 'Чат с клиентом' : 'Чат с командой'));
-const peerRoleLabel = computed(() => {
-    if (isConversationMode.value)
-        return 'Просмотр диалога';
-    if (isStaff.value)
-        return 'Клиент';
-    return selectedPeer.value?.role === 'admin' ? 'Администратор' : 'Куратор';
-});
-const conversationTitle = (conversation) => `${conversation.sender?.name ?? 'Пользователь'} — ${conversation.recipient?.name ?? 'Пользователь'}`;
-const conversationAvatar = (conversation) => conversation.sender?.avatar_path || conversation.recipient?.avatar_path || '';
-
-function voiceExtension(mimeType) {
-    if (mimeType.includes('mp4')) return 'm4a';
-    if (mimeType.includes('ogg')) return 'ogg';
-    if (mimeType.includes('wav')) return 'wav';
-    if (mimeType.includes('mpeg')) return 'mp3';
-    return 'webm';
-}
-
-function formatUnread(count) {
-    return count > 99 ? '99+' : String(count);
-}
+const isConversationView = computed(() => activeChat.value.type === 'curator-view');
+const selectedPeer = computed(() => peers.value.find((peer) => peer.id === activeChat.value.peerId) ?? null);
+const activeConversation = computed(() => activeChat.value.conversation ?? null);
+const chatNotificationKey = computed(() => isRoom.value ? `room:${activeRoomSlug.value}` : (selectedPeer.value ? `direct:${selectedPeer.value.id}` : null));
+const chatPushEnabled = computed(() => chatNotificationKey.value ? chatPushPreferences.value[chatNotificationKey.value] !== false : true);
+const chatName = computed(() => isRoom.value ? (activeRoom.value?.name ?? 'Общий чат') : selectedPeer.value?.name ?? 'Чат');
+const chatSubtitle = computed(() => isRoom.value ? (isImportant.value ? 'Только для важной информации' : 'Все участники проекта') : (selectedPeer.value?.role === 'client' ? 'Участница' : (selectedPeer.value?.role === 'admin' ? 'Администратор' : 'Куратор')));
+const chatItems = computed(() => [
+    ...(important.value ? [{ type: 'important', id: 'important-info', name: important.value.name, subtitle: 'Важная информация от администратора', icon: 'campaign', ...important.value }] : []),
+    ...(general.value ? [{ type: 'general', id: 'general', name: general.value.name, subtitle: 'Все участники проекта', icon: 'groups', ...general.value }] : []),
+    ...peers.value.map((peer) => ({ type: 'direct', id: peer.id, subtitle: peer.role === 'admin' ? 'Администратор' : 'Куратор', icon: 'person', ...peer })),
+]);
 
 function formatTime(value) {
-    return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+    if (!value) return '';
+    const date = new Date(value); const today = new Date();
+    if (date.toDateString() !== today.toDateString()) return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit' }).format(date);
+    return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date);
+}
+function formatUnread(count) { return count > 99 ? '99+' : String(count); }
+function voiceExtension(mimeType) { return mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm'; }
+function preview(item) { return item.last_message || 'Сообщений пока нет'; }
+
+const orderedOwnChatItems = computed(() => [...chatItems.value].sort((first, second) => {
+    if (first.type === 'important') return -1;
+    if (second.type === 'important') return 1;
+    if (first.type === 'general') return -1;
+    if (second.type === 'general') return 1;
+    const unreadDifference = Number(Boolean(second.unread_count)) - Number(Boolean(first.unread_count));
+    if (unreadDifference) return unreadDifference;
+    return new Date(second.last_message_at || 0).getTime() - new Date(first.last_message_at || 0).getTime();
+}));
+const displayedChatItems = computed(() => showCuratorConversations.value
+    ? curatorConversations.value.map((conversation) => ({
+        type: 'curator-view', id: conversation.id, icon: 'forum', conversation,
+        name: `${conversation.sender?.name ?? 'Участник'} — ${conversation.recipient?.name ?? 'Участник'}`,
+        last_message: conversation.body || 'Сообщений пока нет', last_message_at: conversation.created_at,
+    }))
+    : orderedOwnChatItems.value);
+const filteredChatItems = computed(() => {
+    const query = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
+    if (!query) return displayedChatItems.value;
+    return displayedChatItems.value.filter((item) => `${item.name ?? ''} ${item.subtitle ?? ''}`.toLocaleLowerCase('ru-RU').includes(query));
+});
+const directoryAvatarById = computed(() => new Map(
+    [...mentionables.value, ...peers.value]
+        .filter((user) => user.avatar_path)
+        .map((user) => [user.id, user.avatar_path]),
+));
+
+const mentionQuery = computed(() => (body.value.match(/@([^\s@]*)$/)?.[1] ?? '').toLocaleLowerCase('ru-RU'));
+const mentionSuggestions = computed(() => mentionQuery.value ? mentionables.value.filter((user) => user.name.toLocaleLowerCase('ru-RU').includes(mentionQuery.value)).slice(0, 5) : []);
+const desktopChatLayout = () => window.matchMedia('(min-width: 1024px)').matches;
+// Avatar links from the private CDN are signed and expire, so a chat refresh
+// must always replace a previously cached link with the current API value.
+const preserveAvatar = (_current, next) => next?.avatar_path ?? null;
+function messageAvatar(message) {
+    if (hiddenMessageAvatarIds.value.has(message.id)) return null;
+    // Use the same current URL as the shared chat-user directory instead of
+    // keeping a separate signed S3 URL in every message row.
+    return directoryAvatarById.value.get(message.sender_id)
+        ?? (message.sender_id === auth.user?.id ? auth.user?.avatar_path : message.sender?.avatar_path)
+        ?? null;
+}
+function showMessageAvatar(message) {
+    return isRoom.value || Number(message.sender_id) !== 10;
+}
+function messageAvatarInitials(message) {
+    return String(messageSenderName(message))
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0])
+        .join('')
+        .toLocaleUpperCase('ru-RU') || '•';
+}
+function hideMessageAvatar(messageId) {
+    hiddenMessageAvatarIds.value = new Set([...hiddenMessageAvatarIds.value, messageId]);
+}
+function messageSenderName(message) {
+    if (selectedPeer.value?.id === 10 && Number(message.sender_id) === 10 && Number(auth.user?.id) !== 10)
+        return 'Куратор';
+    return message.sender?.name ?? 'Пользователь';
+}
+function preservePeerAvatars(nextPeers) {
+    const currentPeers = new Map(peers.value.map((peer) => [peer.id, peer]));
+    return nextPeers.map((peer) => ({ ...peer, avatar_path: preserveAvatar(currentPeers.get(peer.id), peer) }));
+}
+function preserveMessageAvatars(nextMessages) {
+    const currentMessages = new Map(messages.value.map((message) => [message.id, message]));
+    return nextMessages.map((message) => {
+        const previous = currentMessages.get(message.id);
+        if (message.sender) message.sender.avatar_path = preserveAvatar(previous?.sender, message.sender);
+        return message;
+    });
 }
 
-async function loadPeers() {
-    const { data } = await api.get('/chat/peers');
-    peers.value = data.data;
-    if (!selectedPeerId.value && peers.value.length)
-        selectedPeerId.value = peers.value[0].id;
+async function loadDirectory() {
+    const requests = [api.get('/chat/peers'), api.get('/chat/general'), api.get('/chat/important'), api.get('/chat/mentionables')];
+    if (isAdmin.value) requests.push(api.get('/chat/curator-conversations'));
+    const [peersResponse, generalResponse, importantResponse, mentionablesResponse, conversationsResponse] = await Promise.all(requests);
+    peers.value = preservePeerAvatars(peersResponse.data.data ?? []);
+    general.value = generalResponse.data.data;
+    important.value = importantResponse.data.data;
+    mentionables.value = mentionablesResponse.data.data ?? [];
+    if (conversationsResponse) curatorConversations.value = conversationsResponse.data.data ?? [];
 }
-
-async function loadConversations() {
-    if (!isAdmin.value)
-        return;
-    const { data } = await api.get('/chat/conversations');
-    conversations.value = data.data;
-    if (!selectedConversationId.value && conversations.value.length)
-        selectedConversationId.value = conversations.value[0].id;
+async function loadChatPushPreferences() {
+    const { data } = await api.get('/chat/notification-preferences');
+    chatPushPreferences.value = data.data ?? {};
 }
-
-async function load(keepPosition = false) {
-    const params = isConversationMode.value
-        ? (selectedParticipantIds.value ? {
-            participant_a_id: selectedParticipantIds.value[0],
-            participant_b_id: selectedParticipantIds.value[1],
-        } : null)
-        : (selectedPeerId.value ? { peer_id: selectedPeerId.value } : null);
-
-    if (!params) {
-        messages.value = [];
-        return;
-    }
-
-    const { data } = await api.get('/chat/messages', { params });
-    messages.value = data.data;
-    if (!isConversationMode.value && selectedPeer.value)
-        selectedPeer.value.unread_count = 0;
-    if (!keepPosition) {
-        await nextTick();
+async function scrollToLatest() {
+    await nextTick();
+    requestAnimationFrame(() => {
         listRef.value?.scrollTo({ top: listRef.value.scrollHeight });
+        // A second frame accounts for the mobile dialog becoming visible.
+        requestAnimationFrame(() => listRef.value?.scrollTo({ top: listRef.value.scrollHeight }));
+    });
+}
+async function loadMessages(keepPosition = false) {
+    const requestId = ++messagesRequestId;
+    if (!keepPosition) messagesLoading.value = true;
+    try {
+        const response = isRoom.value
+            ? await api.get(`/chat/${isImportant.value ? 'important' : 'general'}/messages`, { params: { mark_read: !keepPosition } })
+            : (isConversationView.value && activeConversation.value ? await api.get('/chat/messages', { params: { participant_a_id: activeConversation.value.sender_id, participant_b_id: activeConversation.value.recipient_id } })
+            : (selectedPeer.value ? await api.get('/chat/messages', { params: { peer_id: selectedPeer.value.id } }) : null));
+        if (requestId !== messagesRequestId) return;
+        messages.value = preserveMessageAvatars(response?.data.data ?? []);
+        if (isRoom.value && activeRoom.value && !keepPosition) activeRoom.value.unread_count = 0;
+        if (!isRoom.value && selectedPeer.value) selectedPeer.value.unread_count = 0;
+        if (!keepPosition || (!isRoom.value && !isConversationView.value))
+            window.dispatchEvent(new Event('novaya-ya:chat-read'));
+        if (!keepPosition) await scrollToLatest();
+    } finally {
+        if (requestId === messagesRequestId) messagesLoading.value = false;
     }
 }
-
-async function selectPeer(peerId) {
-    selectedPeerId.value = peerId;
-    await load();
-}
-
-async function selectConversation(conversationId) {
-    selectedConversationId.value = conversationId;
-    await load();
-}
-
-async function setChatMode(mode) {
-    if (chatMode.value === mode)
-        return;
-    chatMode.value = mode;
+async function openChat(item) {
     messages.value = [];
-    if (isConversationMode.value)
-        await loadConversations();
-    await load();
+    activeChat.value = item.type === 'general' || item.type === 'important' ? { type: item.type, peerId: null } : (item.type === 'curator-view' ? { type: 'curator-view', conversation: item.conversation } : { type: 'direct', peerId: item.id });
+    mobileListOpen.value = false;
+    await loadMessages();
 }
-
-async function refreshChat() {
-    if (isConversationMode.value)
-        await loadConversations();
-    else
-        await loadPeers();
-    await load(true);
+function showChatList() { mobileListOpen.value = true; }
+async function openCuratorConversation(conversation) {
+    showCuratorConversations.value = true;
+    await openChat({ type: 'curator-view', conversation });
+}
+async function returnToOwnChats() {
+    showCuratorConversations.value = false;
+    await openChat({ type: 'general' });
+}
+async function refreshForNotification(event) {
+    const notification = event instanceof CustomEvent ? event.detail : event;
+    if (notification?.type !== 'chat') return;
+    const isCurrentGeneral = notification.data?.room_slug === activeRoomSlug.value && isRoom.value;
+    const isCurrentDirect = Number(notification.data?.sender_id) === Number(selectedPeer.value?.id);
+    const tasks = [loadDirectory().catch(() => undefined)];
+    if ((isCurrentGeneral || isCurrentDirect) && (!mobileListOpen.value || desktopChatLayout()))
+        tasks.push(loadMessages(true));
+    await Promise.all(tasks);
 }
 
 async function send({ photo = null, voice = null } = {}) {
     const messageBody = body.value.trim();
-    if (isConversationMode.value || (!messageBody && !photo && !voice) || !selectedPeerId.value || sending.value)
-        return;
-    sending.value = true;
-    chatError.value = '';
+    if ((!messageBody && !photo && !voice) || sending.value || isConversationView.value || (isImportant.value && !isAdmin.value) || (!isRoom.value && !selectedPeer.value)) return;
+    sending.value = true; chatError.value = '';
     try {
-        const payload = photo || voice ? new FormData() : { recipient_id: selectedPeerId.value, body: messageBody };
+        if (editingMessage.value) {
+            const { data } = await api.patch(`/chat/messages/${editingMessage.value.id}`, { body: messageBody });
+            const index = messages.value.findIndex((message) => message.id === data.data.id);
+            if (index >= 0) messages.value[index] = data.data;
+            body.value = ''; editingMessage.value = null;
+            return;
+        }
+        const payload = photo || voice ? new FormData() : (isRoom.value ? { room_slug: activeRoomSlug.value, body: messageBody, reply_to_id: replyTo.value?.id } : { recipient_id: selectedPeer.value.id, body: messageBody, reply_to_id: replyTo.value?.id });
         if (payload instanceof FormData) {
-            payload.append('recipient_id', String(selectedPeerId.value));
+            if (isRoom.value) payload.append('room_slug', activeRoomSlug.value); else payload.append('recipient_id', String(selectedPeer.value.id));
             if (messageBody) payload.append('body', messageBody);
+            if (replyTo.value) payload.append('reply_to_id', String(replyTo.value.id));
             if (photo) payload.append('photo', photo);
             if (voice) payload.append('voice', voice);
         }
         const { data } = await api.post('/chat/messages', payload);
-        messages.value.push(data.data);
-        body.value = '';
-        await nextTick();
-        listRef.value?.scrollTo({ top: listRef.value.scrollHeight, behavior: 'smooth' });
-    }
-    catch (error) {
-        chatError.value = error.response?.data?.errors
-            ? Object.values(error.response.data.errors).flat().join(' ')
-            : 'Не удалось отправить сообщение.';
-    }
-    finally {
-        sending.value = false;
-    }
+        messages.value.push(data.data); body.value = ''; replyTo.value = null;
+        await scrollToLatest();
+        await loadDirectory();
+    } catch (error) {
+        chatError.value = error.response?.data?.message ?? 'Не удалось отправить сообщение.';
+    } finally { sending.value = false; }
 }
-
-function selectPhoto(event) {
-    const [photo] = event.target.files ?? [];
-    if (photo) send({ photo });
-    event.target.value = '';
+function startReply(message) { replyTo.value = message; editingMessage.value = null; }
+function startEdit(message) { editingMessage.value = message; replyTo.value = null; body.value = message.body ?? ''; }
+function cancelComposerMode() { replyTo.value = null; editingMessage.value = null; body.value = ''; }
+function startMessagePress(message) { window.clearTimeout(messagePressTimer); messagePressTimer = window.setTimeout(() => { contextMessage.value = message; }, 500); }
+function cancelMessagePress() { window.clearTimeout(messagePressTimer); }
+function closeMessageMenu() { contextMessage.value = null; }
+function replyFromMenu() { startReply(contextMessage.value); closeMessageMenu(); }
+function editFromMenu() { startEdit(contextMessage.value); closeMessageMenu(); }
+async function reactFromMenu(emoji) { await toggleReaction(contextMessage.value, emoji); closeMessageMenu(); }
+function insertMention(user) { body.value = body.value.replace(/@([^\s@]*)$/, `@${user.name} `); }
+async function toggleReaction(message, emoji) {
+    const { data } = await api.post(`/chat/messages/${message.id}/reactions`, { emoji });
+    const index = messages.value.findIndex((item) => item.id === message.id);
+    if (index >= 0) messages.value[index] = data.data;
 }
-
-async function toggleVoiceRecording() {
-    if (recording.value) {
-        mediaRecorder?.stop();
-        return;
-    }
-    if (!selectedPeerId.value || !navigator.mediaDevices?.getUserMedia) {
-        chatError.value = 'Запись голоса не поддерживается в этом браузере.';
-        return;
-    }
+async function toggleChatPush() {
+    if (chatPushChanging.value) return;
+    chatPushChanging.value = true;
     try {
-        recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioChunks = [];
-        const preferredMimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
-            .find((mimeType) => MediaRecorder.isTypeSupported(mimeType));
-        mediaRecorder = new MediaRecorder(recordingStream, preferredMimeType ? { mimeType: preferredMimeType } : undefined);
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size) audioChunks.push(event.data);
-        };
-        mediaRecorder.onstop = () => {
-            recording.value = false;
-            recordingStream?.getTracks().forEach((track) => track.stop());
-            const mimeType = mediaRecorder.mimeType || preferredMimeType || audioChunks[0]?.type || 'audio/webm';
-            const voice = new File([new Blob(audioChunks, { type: mimeType })], `voice-${Date.now()}.${voiceExtension(mimeType)}`, { type: mimeType });
-            if (voice.size) send({ voice });
-        };
-        mediaRecorder.start();
-        recording.value = true;
-    }
-    catch {
-        chatError.value = 'Не удалось получить доступ к микрофону. Разрешите его использование в браузере.';
-    }
+        if (!chatNotificationKey.value) return;
+        const { data } = await api.patch('/chat/notification-preferences', { chat_key: chatNotificationKey.value, enabled: !chatPushEnabled.value });
+        chatPushPreferences.value = { ...chatPushPreferences.value, [data.data.chat_key]: data.data.enabled };
+        window.dispatchEvent(new CustomEvent('novaya-ya:chat-push-preference', { detail: data.data }));
+    } catch {
+        chatError.value = 'Не удалось изменить настройку уведомлений чата.';
+    } finally { chatPushChanging.value = false; }
 }
-
-function openPhoto(path) {
-    activePhoto.value = path;
+function selectPhoto(event) { const [photo] = event.target.files ?? []; if (photo) send({ photo }); event.target.value = ''; }
+async function toggleVoiceRecording() {
+    if (recording.value) { mediaRecorder?.stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia) { chatError.value = 'Запись голоса не поддерживается в этом браузере.'; return; }
+    try {
+        recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true }); audioChunks = [];
+        const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find((type) => MediaRecorder.isTypeSupported(type));
+        mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+        mediaRecorder.ondataavailable = (event) => { if (event.data.size) audioChunks.push(event.data); };
+        mediaRecorder.onstop = () => { recording.value = false; recordingStream?.getTracks().forEach((track) => track.stop()); const type = mediaRecorder.mimeType || mimeType || 'audio/webm'; const voice = new File([new Blob(audioChunks, { type })], `voice-${Date.now()}.${voiceExtension(type)}`, { type }); if (voice.size) send({ voice }); };
+        mediaRecorder.start(); recording.value = true;
+    } catch { chatError.value = 'Не удалось получить доступ к микрофону.'; }
 }
-
-function closePhoto() {
-    activePhoto.value = null;
-}
-
-function closePhotoOnEscape(event) {
-    if (event.key === 'Escape') closePhoto();
-}
-
-onMounted(async () => {
-    await loadPeers();
-    await load();
-    refreshTimer = window.setInterval(() => refreshChat().catch(() => undefined), 5000);
-    window.addEventListener('keydown', closePhotoOnEscape);
-});
-
-onBeforeUnmount(() => {
-    window.clearInterval(refreshTimer);
-    window.removeEventListener('keydown', closePhotoOnEscape);
-    if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
-    recordingStream?.getTracks().forEach((track) => track.stop());
-});
+onMounted(async () => { await Promise.all([loadDirectory(), loadChatPushPreferences()]); if (desktopChatLayout()) await loadMessages(); window.addEventListener('novaya-ya:notification', refreshForNotification); });
+onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', refreshForNotification); window.clearTimeout(messagePressTimer); if (mediaRecorder?.state === 'recording') mediaRecorder.stop(); recordingStream?.getTracks().forEach((track) => track.stop()); });
 </script>
 
 <template>
-  <section class="grid min-w-0 gap-6 overflow-x-hidden">
-    <div>
+  <section class="chat-page min-w-0">
+    <div class="mb-5 hidden lg:block">
       <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Сопровождение</p>
-      <div class="mt-2 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 class="break-words text-[28px] font-extrabold leading-9 sm:text-[32px] sm:leading-10">{{ chatTitle }}</h2>
-        <div v-if="isAdmin" class="grid w-full grid-cols-2 rounded-2xl border border-white/10 bg-surface-container p-1 text-xs font-bold sm:w-auto">
-          <button class="min-w-0 rounded-xl px-2 py-2 transition whitespace-nowrap sm:px-3" :class="!isConversationMode ? 'bg-primary text-[#470382]' : 'text-on-muted'" type="button" @click="setChatMode('direct')">Мои чаты</button>
-          <button class="min-w-0 rounded-xl px-2 py-2 transition whitespace-nowrap sm:px-3" :class="isConversationMode ? 'bg-primary text-[#470382]' : 'text-on-muted'" type="button" @click="setChatMode('all')">Все чаты</button>
-        </div>
-      </div>
+      <h2 class="mt-2 text-[32px] font-extrabold leading-10">Чат с командой</h2>
     </div>
-
-    <label v-if="hasPeerList" class="grid min-w-0 gap-2 text-sm font-bold text-on-muted lg:hidden">
-      {{ isConversationMode ? 'Выберите диалог' : (isStaff ? 'Выберите клиента' : 'Выберите собеседника') }}
-      <select v-if="isConversationMode" class="w-full min-w-0 max-w-full truncate rounded-2xl border border-white/10 bg-surface-container px-4 py-3 text-on-surface" :value="selectedConversationId ?? ''" @change="selectConversation(Number($event.target.value))">
-        <option v-for="conversation in conversations" :key="conversation.id" :value="conversation.id">{{ conversationTitle(conversation) }}</option>
-      </select>
-      <select v-else class="w-full min-w-0 max-w-full truncate rounded-2xl border border-white/10 bg-surface-container px-4 py-3 text-on-surface" :value="selectedPeerId ?? ''" @change="selectPeer(Number($event.target.value))">
-        <option v-for="peer in peers" :key="peer.id" :value="peer.id">{{ peer.name }}{{ peer.unread_count ? ` · ${peer.unread_count} новых` : '' }}</option>
-      </select>
-    </label>
-
-    <article class="glass-panel grid h-[68vh] min-w-0 overflow-hidden rounded-[28px]" :class="hasPeerList ? 'lg:grid-cols-[280px_1fr]' : ''">
-      <aside v-if="hasPeerList" class="hidden overflow-y-auto border-r border-white/10 p-3 lg:block">
-        <p class="px-3 pb-3 pt-2 text-xs font-bold uppercase text-on-muted">{{ isConversationMode ? 'Диалоги' : (isStaff ? 'Клиенты' : 'Команда') }}</p>
-        <template v-if="isConversationMode">
-          <button v-for="conversation in conversations" :key="conversation.id" class="mb-1 flex w-full items-center gap-3 rounded-2xl p-3 text-left transition" :class="selectedConversationId === conversation.id ? 'bg-primary/15 text-primary' : 'text-on-muted hover:bg-white/5'" type="button" @click="selectConversation(conversation.id)">
-            <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-high">
-              <img v-if="conversationAvatar(conversation)" class="h-full w-full object-cover" :src="conversationAvatar(conversation)" :alt="`Аватар ${conversation.sender?.name ?? conversation.recipient?.name ?? 'пользователя'}`" />
-              <span v-else class="material-symbols-outlined">forum</span>
-            </span>
-            <span class="min-w-0"><span class="block truncate text-sm font-extrabold">{{ conversationTitle(conversation) }}</span><span class="block truncate text-xs opacity-70">{{ conversation.body || (conversation.attachment_type === 'photo' ? 'Фото' : 'Голосовое сообщение') }}</span></span>
-          </button>
-        </template>
-        <template v-else>
-          <button v-for="peer in peers" :key="peer.id" class="mb-1 flex w-full items-center gap-3 rounded-2xl p-3 text-left transition" :class="selectedPeerId === peer.id ? 'bg-primary/15 text-primary' : 'text-on-muted hover:bg-white/5'" type="button" @click="selectPeer(peer.id)">
-            <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-high">
-              <img v-if="peer.avatar_path" class="h-full w-full object-cover" :src="peer.avatar_path" :alt="`Аватар ${peer.name}`" />
-              <span v-else class="material-symbols-outlined">person</span>
-            </span>
-            <span class="min-w-0 flex-1 truncate text-sm font-extrabold">{{ peer.name }}</span>
-            <span v-if="peer.unread_count" class="grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]" :aria-label="`${peer.unread_count} непрочитанных сообщений`">{{ formatUnread(peer.unread_count) }}</span>
-          </button>
-        </template>
-      </aside>
-
-      <div class="grid min-w-0 grid-rows-[auto_1fr_auto] overflow-hidden">
-        <header v-if="isConversationMode && selectedConversation" class="flex min-w-0 items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
-          <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-primary">
-            <img v-if="conversationAvatar(selectedConversation)" class="h-full w-full object-cover" :src="conversationAvatar(selectedConversation)" :alt="`Аватар ${selectedConversation.sender?.name ?? selectedConversation.recipient?.name ?? 'пользователя'}`" />
-            <span v-else class="material-symbols-outlined">forum</span>
-          </span>
-          <div class="min-w-0"><strong class="block break-words text-sm leading-5">{{ conversationTitle(selectedConversation) }}</strong><span class="text-xs text-on-muted">Просмотр диалога</span></div>
-        </header>
-        <header v-else-if="selectedPeer" class="flex min-w-0 items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
-          <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-primary">
-            <img v-if="selectedPeer.avatar_path" class="h-full w-full object-cover" :src="selectedPeer.avatar_path" :alt="`Аватар ${selectedPeer.name}`" />
-            <span v-else class="material-symbols-outlined">person</span>
-          </span>
-          <div class="min-w-0"><strong class="block break-words text-sm leading-5">{{ selectedPeer.name }}</strong><span class="text-xs text-on-muted">{{ peerRoleLabel }}</span></div>
-        </header>
-
-        <div ref="listRef" class="grid content-start gap-3 overflow-y-auto p-5">
-          <div v-for="message in messages" :key="message.id" class="max-w-[88%] rounded-2xl p-4 text-sm leading-6 sm:max-w-[75%]" :class="message.sender_id === auth.user?.id ? 'ml-auto bg-primary text-[#470382]' : 'bg-surface-container text-on-surface'">
-            <div class="mb-1 flex min-w-0 items-center justify-between gap-3 text-xs font-extrabold" :class="message.sender_id === auth.user?.id ? 'text-[#470382]/75' : 'text-primary'">
-              <span class="min-w-0 break-words">{{ message.sender?.name ?? 'Пользователь' }}</span>
-              <span class="shrink-0 font-semibold opacity-70">{{ formatTime(message.created_at) }}</span>
-            </div>
-            <p v-if="message.body">{{ message.body }}</p>
-            <button v-if="message.attachment_type === 'photo'" class="mt-2 block w-full cursor-zoom-in overflow-hidden rounded-xl focus:outline-none focus:ring-2 focus:ring-primary" type="button" aria-label="Открыть фото во весь экран" @click="openPhoto(message.attachment_path)">
-              <img class="max-h-80 w-full rounded-xl object-cover transition hover:scale-[1.02]" :src="message.attachment_path" alt="Фото в сообщении" />
-            </button>
-            <audio v-else-if="message.attachment_type === 'voice'" class="mt-2 w-full min-w-[220px]" :src="message.attachment_path" controls />
-          </div>
-          <div v-if="!messages.length" class="rounded-2xl border border-white/10 bg-surface-container p-4 text-sm text-on-muted">
-            {{ isConversationMode ? 'В этом диалоге пока нет сообщений.' : (selectedPeer ? 'Сообщений пока нет. Начните диалог.' : 'Выберите клиента для начала переписки.') }}
-          </div>
+    <article class="chat-shell glass-panel grid min-w-0 overflow-hidden rounded-[28px] lg:h-[68vh] lg:grid-cols-[300px_1fr]">
+      <aside class="chat-directory brand-scrollbar min-h-0 overflow-y-auto border-white/10 lg:border-r lg:p-3" :class="mobileListOpen ? 'flex' : 'hidden lg:flex'">
+        <label class="relative mx-3 mt-3 block">
+          <span class="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[20px] text-on-muted">search</span>
+          <input v-model="searchQuery" class="w-full rounded-xl border border-white/10 bg-surface-low py-2.5 pl-10 pr-3 text-sm text-on-surface outline-none placeholder:text-on-muted/70 focus:border-primary/60" type="search" placeholder="Поиск по имени или фамилии" />
+        </label>
+        <div v-if="isAdmin" class="grid gap-1 border-b border-white/10 p-2 lg:grid-cols-2">
+          <button class="rounded-xl px-2 py-2 text-xs font-bold" :class="!showCuratorConversations ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="returnToOwnChats">Мои чаты</button>
+          <button class="rounded-xl px-2 py-2 text-xs font-bold" :class="showCuratorConversations ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="showCuratorConversations = true">Чаты куратора</button>
         </div>
-
-        <p v-if="chatError" class="mx-4 mt-3 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200">{{ chatError }}</p>
-        <p v-if="isConversationMode" class="border-t border-white/10 bg-surface-container/60 px-5 py-4 text-sm font-semibold text-on-muted">Режим просмотра: сообщения в этом диалоге нельзя изменить или отправить от имени участника.</p>
-        <form v-else class="flex flex-wrap gap-3 border-t border-white/10 bg-surface-container/60 p-4" @submit.prevent="send">
+        <div class="sticky top-0 z-10 border-b border-white/10 bg-surface-container/95 px-5 py-4 backdrop-blur lg:hidden"><h2 class="text-2xl font-extrabold">Чаты</h2><p class="mt-1 text-sm text-on-muted">Сопровождение и поддержка</p></div>
+        <p class="hidden px-3 pb-3 pt-2 text-xs font-bold uppercase text-on-muted lg:block">Диалоги</p>
+        <button v-for="item in filteredChatItems" :key="`${item.type}-${item.id}`" class="chat-item flex w-full items-center gap-3 px-5 py-4 text-left transition lg:mb-1 lg:rounded-2xl lg:p-3" :class="(isRoom && item.type === activeChat.type) || (!isRoom && item.id === selectedPeer?.id) ? 'bg-primary/15 text-primary' : 'text-on-surface hover:bg-white/5'" type="button" @click="openChat(item)">
+          <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-high text-primary"><img v-if="item.avatar_path" class="h-full w-full object-cover" :src="item.avatar_path" :alt="`Аватар ${item.name}`" @error="item.avatar_path = null" /><span v-else class="material-symbols-outlined">{{ item.icon }}</span></span>
+          <span class="min-w-0 flex-1"><span class="flex items-start justify-between gap-2"><strong class="text-sm" :class="item.type === 'curator-view' ? 'whitespace-normal break-words leading-5' : 'truncate'">{{ item.name }}</strong><small class="shrink-0 pt-0.5 text-[11px] font-semibold text-on-muted">{{ formatTime(item.last_message_at) }}</small></span><span class="mt-1 flex items-center gap-2"><span class="min-w-0 flex-1 truncate text-xs text-on-muted">{{ preview(item) }}</span><span v-if="item.unread_count" class="grid h-5 min-w-5 place-items-center rounded-full bg-danger-container px-1 text-[10px] font-extrabold text-danger">{{ formatUnread(item.unread_count) }}</span></span></span>
+        </button>
+      </aside>
+      <div class="chat-dialog grid min-h-0 grid-rows-[auto_1fr_auto]" :class="mobileListOpen ? 'hidden lg:grid' : 'grid'">
+        <header class="flex min-w-0 items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5"><button class="grid h-10 w-8 shrink-0 place-items-center text-primary lg:hidden" type="button" aria-label="Вернуться к чатам" @click="showChatList"><span class="material-symbols-outlined">arrow_back</span></button><span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-primary"><img v-if="selectedPeer?.avatar_path && !isRoom" class="h-full w-full object-cover" :src="selectedPeer.avatar_path" :alt="`Аватар ${chatName}`" @error="selectedPeer.avatar_path = null" /><span v-else class="material-symbols-outlined">{{ isRoom ? (isImportant ? 'campaign' : 'groups') : 'person' }}</span></span><div class="min-w-0 flex-1"><strong class="block truncate text-sm">{{ chatName }}</strong><span class="block truncate text-xs text-on-muted">{{ chatSubtitle }}</span></div><button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-on-muted hover:bg-white/5 hover:text-primary disabled:opacity-50" type="button" :disabled="chatPushChanging" :title="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-label="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-pressed="chatPushEnabled" @click="toggleChatPush"><span class="material-symbols-outlined">{{ chatPushEnabled ? 'notifications' : 'notifications_off' }}</span></button></header>
+        <div ref="listRef" class="brand-scrollbar grid min-h-0 content-start gap-3 overflow-y-auto p-4 sm:p-5">
+          <div v-for="message in messages" :key="message.id" class="flex items-end gap-2" :class="message.sender_id === auth.user?.id ? 'justify-end' : 'justify-start'">
+            <span v-if="message.sender_id !== auth.user?.id && showMessageAvatar(message)" class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-[10px] font-extrabold text-primary"><img v-if="messageAvatar(message)" class="h-full w-full object-cover" :src="messageAvatar(message)" :alt="`Аватар ${message.sender?.name ?? 'пользователя'}`" @error="hideMessageAvatar(message.id)" /><span v-else aria-hidden="true">{{ messageAvatarInitials(message) }}</span></span>
+            <div class="max-w-[88%] select-none rounded-2xl p-3 text-sm leading-6 sm:max-w-[75%]" :class="message.sender_id === auth.user?.id ? 'rounded-br-md bg-primary text-[#470382]' : 'rounded-bl-md bg-surface-container text-on-surface'" @pointerdown="startMessagePress(message)" @pointerup="cancelMessagePress" @pointerleave="cancelMessagePress" @pointercancel="cancelMessagePress" @contextmenu.prevent="contextMessage = message">
+              <div v-if="isRoom || message.sender_id !== auth.user?.id" class="mb-1 flex justify-between gap-3 text-xs font-extrabold"><span>{{ messageSenderName(message) }}</span><span>{{ formatTime(message.created_at) }}</span></div>
+              <button v-if="message.reply_to" class="mb-2 block w-full border-l-2 border-primary/70 bg-black/10 px-2 text-left text-xs" type="button" @click="startReply(message.reply_to)">{{ messageSenderName(message.reply_to) }}: {{ message.reply_to.body }}</button>
+              <p v-if="message.body" class="whitespace-pre-wrap break-words">{{ message.body }} <small v-if="message.edited_at" class="opacity-60">(изм.)</small></p>
+              <button v-if="message.attachment_type === 'photo'" class="mt-2 block overflow-hidden rounded-xl" type="button" @click="activePhoto = message.attachment_path"><img class="max-h-80 rounded-xl object-cover" :src="message.attachment_path" alt="Фото" @load="scrollToLatest" /></button>
+              <audio v-else-if="message.attachment_type === 'voice'" class="chat-voice mt-2" controls @loadedmetadata="scrollToLatest"><source :src="message.attachment_path" type="audio/mp4" /></audio>
+              <div v-if="message.reactions?.length" class="mt-2 flex flex-wrap gap-1 text-xs"><span v-for="reaction in message.reactions" :key="reaction.id" class="rounded-full bg-black/15 px-1">{{ reaction.emoji }}</span></div>
+            </div>
+            <span v-if="message.sender_id === auth.user?.id && showMessageAvatar(message)" class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-[10px] font-extrabold text-primary"><img v-if="messageAvatar(message)" class="h-full w-full object-cover" :src="messageAvatar(message)" alt="Ваш аватар" @error="hideMessageAvatar(message.id)" /><span v-else aria-hidden="true">{{ messageAvatarInitials(message) }}</span></span>
+          </div>
+          <p v-if="messagesLoading" class="rounded-2xl border border-white/10 bg-surface-container p-4 text-sm text-on-muted">Загрузка сообщений…</p>
+          <p v-else-if="!messages.length" class="rounded-2xl border border-white/10 bg-surface-container p-4 text-sm text-on-muted">Сообщений пока нет. Начните диалог.</p>
+        </div>
+        <div v-if="isImportant && !isAdmin" class="border-t border-white/10 bg-surface-container/70 px-4 py-5 text-center text-sm text-on-muted">Публиковать сообщения в этом чате может только администратор.</div>
+        <form v-else class="relative flex items-end gap-2 border-t border-white/10 bg-surface-container/70 p-3 sm:p-4" @submit.prevent="send">
+          <div v-if="replyTo || editingMessage" class="absolute bottom-full left-0 right-0 flex items-center justify-between border-t border-white/10 bg-surface-high px-4 py-2 text-xs"><span class="truncate">{{ editingMessage ? 'Редактирование сообщения' : `Ответ: ${messageSenderName(replyTo)}` }}</span><button type="button" aria-label="Отменить" @click="cancelComposerMode"><span class="material-symbols-outlined text-[18px]">close</span></button></div>
+          <div v-if="mentionSuggestions.length" class="absolute bottom-full left-3 right-3 max-h-44 overflow-y-auto rounded-t-2xl border border-white/10 bg-surface-highest p-1"><button v-for="user in mentionSuggestions" :key="user.id" class="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-white/5" type="button" @click="insertMention(user)">@{{ user.name }}</button></div>
           <input ref="photoInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="selectPhoto" />
-          <button class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-white/10 text-on-muted hover:text-primary disabled:opacity-40" type="button" :disabled="!selectedPeer || sending" aria-label="Прикрепить фото" @click="photoInput?.click()"><span class="material-symbols-outlined">add_photo_alternate</span></button>
-          <button class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border transition disabled:opacity-40" :class="recording ? 'border-red-400/50 bg-red-500/20 text-red-200 animate-pulse' : 'border-white/10 text-on-muted hover:text-primary'" type="button" :disabled="!selectedPeer || sending" :aria-label="recording ? 'Остановить запись голоса' : 'Записать голосовое сообщение'" @click="toggleVoiceRecording"><span class="material-symbols-outlined">{{ recording ? 'stop' : 'mic' }}</span></button>
-          <input v-model="body" class="min-w-0 flex-1 rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" :disabled="!selectedPeer" placeholder="Напишите сообщение" />
-          <button class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-primary text-[#470382] disabled:opacity-40" type="submit" :disabled="!selectedPeer || !body.trim()" aria-label="Отправить сообщение"><span class="material-symbols-outlined">send</span></button>
+          <button class="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-on-muted hover:text-primary disabled:opacity-40" type="button" :disabled="sending" aria-label="Прикрепить фото" @click="photoInput?.click()"><span class="material-symbols-outlined">add_photo_alternate</span></button>
+          <button class="grid h-11 w-11 shrink-0 place-items-center rounded-xl transition disabled:opacity-40" :class="recording ? 'bg-red-500/20 text-red-200' : 'text-on-muted hover:text-primary'" type="button" :disabled="sending" @click="toggleVoiceRecording"><span class="material-symbols-outlined">{{ recording ? 'stop' : 'mic' }}</span></button>
+          <textarea v-model="body" rows="1" class="min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-[16px] text-on-surface outline-none focus:border-primary/50" placeholder="Сообщение" />
+          <button class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary text-[#470382] disabled:opacity-40" type="submit" :disabled="sending || !body.trim()" aria-label="Отправить"><span class="material-symbols-outlined">send</span></button>
         </form>
+        <p v-if="chatError" class="absolute bottom-20 left-4 right-4 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200">{{ chatError }}</p>
       </div>
     </article>
-
-    <div v-if="activePhoto" class="fixed inset-0 z-[100] grid place-items-center bg-black/90 p-4" role="dialog" aria-modal="true" aria-label="Просмотр фотографии" @click.self="closePhoto">
-      <button class="absolute right-5 top-5 grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white transition hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white" type="button" aria-label="Закрыть фото" @click="closePhoto"><span class="material-symbols-outlined">close</span></button>
-      <img class="max-h-full max-w-full rounded-xl object-contain" :src="activePhoto" alt="Фото в сообщении, увеличенное" />
+    <div v-if="contextMessage" class="fixed inset-0 z-[190] flex items-end justify-center bg-black/45 p-4 sm:items-center" role="dialog" aria-modal="true" aria-label="Действия с сообщением" @click.self="closeMessageMenu">
+      <div class="w-full max-w-sm rounded-3xl border border-white/10 bg-surface-highest p-2 shadow-2xl">
+        <button class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold hover:bg-white/5" type="button" @click="replyFromMenu"><span class="material-symbols-outlined text-primary">reply</span>Ответить</button>
+        <div class="flex items-center gap-2 px-4 py-2"><span class="text-sm text-on-muted">Реакция</span><button v-for="emoji in ['❤️', '👍', '🔥', '👏']" :key="emoji" class="grid h-10 w-10 place-items-center rounded-full bg-surface-high text-lg hover:bg-primary/20" type="button" @click="reactFromMenu(emoji)">{{ emoji }}</button></div>
+        <button v-if="contextMessage.sender_id === auth.user?.id" class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold hover:bg-white/5" type="button" @click="editFromMenu"><span class="material-symbols-outlined text-primary">edit</span>Изменить</button>
+        <button class="mt-1 w-full rounded-2xl px-4 py-3 text-sm text-on-muted hover:bg-white/5" type="button" @click="closeMessageMenu">Отмена</button>
+      </div>
     </div>
+    <div v-if="activePhoto" class="fixed inset-0 z-[200] grid place-items-center bg-black/90 p-4" role="dialog" aria-modal="true" @click.self="activePhoto = null"><button class="absolute right-5 top-5 z-10 grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white" type="button" aria-label="Закрыть" @click="activePhoto = null"><span class="material-symbols-outlined">close</span></button><img class="h-auto max-h-[90dvh] w-auto max-w-[94vw] rounded-xl object-contain" :src="activePhoto" alt="Фото в сообщении" @error="chatError = 'Не удалось загрузить фотографию.'" /></div>
   </section>
 </template>
+
+<style scoped>
+.chat-page { min-height: min(760px, calc(100dvh - 9rem)); }
+.chat-shell { height: calc(100dvh - 10.5rem); min-height: 32rem; }
+.chat-directory { flex-direction: column; }
+.chat-voice { display: block; width: 100%; min-width: 200px; }
+.brand-scrollbar { scrollbar-color: #8c55c7 #211e25; scrollbar-width: thin; }
+.brand-scrollbar::-webkit-scrollbar { width: 8px; }
+.brand-scrollbar::-webkit-scrollbar-track { background: #211e25; border-radius: 999px; }
+.brand-scrollbar::-webkit-scrollbar-thumb { background: linear-gradient(#dbb8ff, #8c55c7); border: 2px solid #211e25; border-radius: 999px; }
+@media (max-width: 1023px) {
+  .chat-page { min-height: 0; width: 100%; }
+  .chat-shell { width: 95%; min-width: 0; height: calc(100dvh - 5rem); min-height: 0; margin-inline: auto; border-radius: 1.75rem; }
+  .chat-dialog { min-width: 0; width: 100%; }
+  .chat-voice { width: clamp(200px, calc(100vw - 6rem), 280px); min-width: 0; max-width: 100%; }
+  .brand-scrollbar { padding: 1rem; overscroll-behavior: contain; }
+  .brand-scrollbar > div { max-width: calc(100% - 0.5rem); overflow-wrap: anywhere; word-break: break-word; }
+  .chat-dialog form { display: grid; grid-template-columns: 2.75rem 2.75rem minmax(0, 1fr) 2.75rem; gap: 0.5rem; min-width: 0; padding: 0.75rem; }
+  .chat-dialog form > * { min-width: 0; }
+  .chat-dialog form input { width: 100%; padding-right: 0.75rem; padding-left: 0.75rem; }
+}
+@media (min-width: 1024px) { .chat-shell { height: 68vh; min-height: 30rem; } }
+</style>

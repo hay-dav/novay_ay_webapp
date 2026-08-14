@@ -35,16 +35,25 @@ export const useAuthStore = defineStore('auth', {
         async fetchMe() {
             if (!this.token)
                 return;
-            try {
-                const { data } = await api.get('/auth/me');
-                this.user = data.user;
-            }
-            catch (error) {
-                // A lost mobile connection must not erase a valid long-lived
-                // session. Only the server can confirm an invalid token.
-                if (error.response?.status === 401)
-                    this.clearSession();
-                throw error;
+
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                try {
+                    const { data } = await api.get('/auth/me', { timeout: 8000 });
+                    this.user = data.user;
+                    return;
+                }
+                catch (error) {
+                    // A lost mobile connection must not erase a valid long-lived
+                    // session. Only the server can confirm an invalid token.
+                    if (error.response?.status === 401)
+                        this.clearSession();
+
+                    const canRetry = !error.response || error.response.status >= 500;
+                    if (attempt === 1 || !canRetry)
+                        throw error;
+
+                    await new Promise((resolve) => window.setTimeout(resolve, 600));
+                }
             }
         },
         clearSession() {
