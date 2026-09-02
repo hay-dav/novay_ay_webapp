@@ -14,20 +14,16 @@ class LiveEgressRecordingProcessor
 
     public function process(string $sourcePath): string
     {
-        $directory = storage_path('app/live-egress/'.uniqid('', true));
+        $recordingDirectory = storage_path('app/live-egress');
+        $input = $recordingDirectory.'/'.basename($sourcePath);
+        $directory = $recordingDirectory.'/processing/'.uniqid('', true);
         File::ensureDirectoryExists($directory);
-        $input = $directory.'/input.mp4';
         $output = $directory.'/recording.mp4';
 
         try {
-            $read = Storage::disk('s3')->readStream($sourcePath);
-            if ($read === false) {
-                throw new RuntimeException('Could not read the LiveKit recording from storage.');
+            if (! is_file($input) || filesize($input) === 0) {
+                throw new RuntimeException('The local LiveKit recording is not available yet.');
             }
-            $target = fopen($input, 'wb');
-            stream_copy_to_stream($read, $target);
-            fclose($target);
-            fclose($read);
 
             if (! $this->hasVideoStream($input)) {
                 throw new RuntimeException('The LiveKit recording does not contain a video stream.');

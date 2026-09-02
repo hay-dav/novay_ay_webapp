@@ -18,35 +18,48 @@ class MediaOptimizer
         $directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'novaya-media-'.Str::uuid();
         mkdir($directory, 0700, true);
         $input = $directory.DIRECTORY_SEPARATOR.'source';
-        $output = $directory.DIRECTORY_SEPARATOR.'optimized.'.$this->extensionFor($type);
-
         try {
             $localInput = fopen($input, 'wb');
             stream_copy_to_stream($inputStream, $localInput);
             fclose($localInput);
             fclose($inputStream);
 
-            if (! $this->transcode($input, $output, $type) || ! is_file($output) || filesize($output) === 0) {
-                return null;
-            }
-
-            $optimizedPath = trim(dirname($path), '/').'/'.Str::uuid().'.'.$this->extensionFor($type);
-            $disk->put($optimizedPath, fopen($output, 'rb'), [
-                'visibility' => $public ? 'public' : 'private',
-                'ContentType' => $this->mimeFor($type),
-                // Keep private S3 visibility and signed CDN access, but allow the
-                // shared CDN edge to cache the optimized media for one hour.
-                'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'public, max-age=0, s-maxage=3600, must-revalidate',
-            ]);
-
-            return $optimizedPath;
+            return $this->optimizeLocalFile($input, dirname($path), $type, $public);
         } finally {
             if (is_resource($inputStream)) {
                 fclose($inputStream);
             }
             @unlink($input);
-            @unlink($output);
             @rmdir($directory);
+        }
+    }
+
+    public function optimizeLocalFile(string $input, string $directory, string $type, bool $public = false): ?string
+    {
+        if (! is_file($input)) {
+            return null;
+        }
+
+        $temporaryDirectory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'novaya-media-output-'.Str::uuid();
+        mkdir($temporaryDirectory, 0700, true);
+        $output = $temporaryDirectory.DIRECTORY_SEPARATOR.'optimized.'.$this->extensionFor($type);
+
+        try {
+            if (! $this->transcode($input, $output, $type) || ! is_file($output) || filesize($output) === 0) {
+                return null;
+            }
+
+            $optimizedPath = trim($directory, '/').'/'.Str::uuid().'.'.$this->extensionFor($type);
+            Storage::disk('s3')->put($optimizedPath, fopen($output, 'rb'), [
+                'visibility' => $public ? 'public' : 'private',
+                'ContentType' => $this->mimeFor($type),
+                'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'public, max-age=172800, s-maxage=172800, immutable',
+            ]);
+
+            return $optimizedPath;
+        } finally {
+            @unlink($output);
+            @rmdir($temporaryDirectory);
         }
     }
 

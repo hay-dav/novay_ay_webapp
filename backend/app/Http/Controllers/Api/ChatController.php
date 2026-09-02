@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\OptimizeStoredMedia;
 use App\Models\ChatMessage;
 use App\Models\ChatNotificationPreference;
 use App\Models\ChatRoom;
@@ -10,7 +9,6 @@ use App\Models\ChatRoomRead;
 use App\Models\Notification;
 use App\Models\User;
 use App\Services\MediaStorage;
-use App\Services\MediaOptimizer;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Storage;
@@ -55,11 +53,15 @@ class ChatController extends Controller
 
     public function general(Request $request)
     {
+        if (! $this->canUseRoomChats($request->user())) return response()->json(['data' => null]);
+
         return $this->roomOverview($request, $this->generalRoom());
     }
 
     public function important(Request $request)
     {
+        if (! $this->canUseRoomChats($request->user())) return response()->json(['data' => null]);
+
         return $this->roomOverview($request, $this->importantRoom());
     }
 
@@ -78,11 +80,15 @@ class ChatController extends Controller
 
     public function generalMessages(Request $request)
     {
+        abort_unless($this->canUseRoomChats($request->user()), 403);
+
         return $this->roomMessages($request, $this->generalRoom());
     }
 
     public function importantMessages(Request $request)
     {
+        abort_unless($this->canUseRoomChats($request->user()), 403);
+
         return $this->roomMessages($request, $this->importantRoom());
     }
 
@@ -119,10 +125,10 @@ class ChatController extends Controller
     {
         $user = $request->user();
         $directUnread = ChatMessage::query()->whereNull('chat_room_id')->where('recipient_id', $user->id)->whereNull('read_at')->count();
-        $roomUnread = collect([$this->generalRoom(), $this->importantRoom()])->sum(function (ChatRoom $room) use ($user): int {
+        $roomUnread = $this->canUseRoomChats($user) ? collect([$this->generalRoom(), $this->importantRoom()])->sum(function (ChatRoom $room) use ($user): int {
             $lastReadId = ChatRoomRead::query()->where('chat_room_id', $room->id)->where('user_id', $user->id)->value('last_read_message_id') ?? 0;
             return $room->messages()->where('id', '>', $lastReadId)->where('sender_id', '!=', $user->id)->count();
-        });
+        }) : 0;
 
         return response()->json(['data' => ['count' => $directUnread + $roomUnread]]);
     }
@@ -153,7 +159,7 @@ class ChatController extends Controller
         return response()->json(['data' => $this->decorateConversations($messages)]);
     }
 
-    public function store(Request $request, MediaStorage $media, MediaOptimizer $optimizer)
+    public function store(Request $request, MediaStorage $media)
     {
         $validated = $request->validate([
             'room_slug' => ['nullable', 'string', 'in:general,important-info'],
@@ -164,15 +170,18 @@ class ChatController extends Controller
             'voice' => ['nullable', 'file', 'mimetypes:audio/*,video/webm,application/ogg', 'max:25600', 'required_without_all:body,photo'],
         ]);
         $attachmentPath = null; $attachmentType = null;
-        if ($request->hasFile('photo')) { $attachmentPath = $media->store($request->file('photo'), 'chat/photos'); $attachmentType = 'photo'; }
-        elseif ($request->hasFile('voice')) { $attachmentPath = $media->store($request->file('voice'), 'chat/voice'); $attachmentType = 'voice'; }
+        if ($request->hasFile('photo')) { $attachmentPath = $media->storeOptimized($request->file('photo'), 'chat/photos', 'image'); $attachmentType = 'photo'; }
+        elseif ($request->hasFile('voice')) { $attachmentPath = $media->storeOptimized($request->file('voice'), 'chat/voice', 'audio'); $attachmentType = 'voice'; }
 
         if (filled($validated['room_slug'] ?? null)) {
+            abort_unless($this->canUseRoomChats($request->user()), 403);
             $room = ($validated['room_slug'] ?? null) === 'important-info' ? $this->importantRoom() : $this->generalRoom();
             abort_if($room->slug === 'important-info' && $request->user()->role->value !== 'admin', 403, 'Только администратор может публиковать важную информацию.');
             $message = ChatMessage::query()->create(['chat_room_id' => $room->id, 'reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
             $senderName = $request->user()->name;
-            User::query()->where('id', '!=', $request->user()->id)->whereNull('blocked_at')->whereNull('archived_at')->eachById(function (User $recipient) use ($message, $senderName, $attachmentType, $room): void {
+            User::query()->where('id', '!=', $request->user()->id)->whereNull('blocked_at')->whereNull('archived_at')
+                ->where(fn ($query) => $query->where('role', '!=', 'client')->orWhereNull('staff_status')->orWhereNotIn('staff_status', ['newcomer', 'dropped_out']))
+                ->eachById(function (User $recipient) use ($message, $senderName, $attachmentType, $room): void {
                 Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => $room->name.': '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'room_slug' => $room->slug, 'chat_notification_key' => 'room:'.$room->slug]]);
             });
         } else {
@@ -182,18 +191,6 @@ class ChatController extends Controller
             $senderName = $this->isChatCurator($request->user()) ? 'Куратор' : $request->user()->name;
             Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => 'Новое сообщение от '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'sender_id' => $request->user()->id, 'chat_notification_key' => 'direct:'.$request->user()->id]]);
         }
-        // iOS Safari does not play WebM voice records. Transcode voice notes
-        // before returning the message so every client receives a playable M4A
-        // immediately, rather than waiting for the background media worker.
-        if ($attachmentType === 'voice' && $attachmentPath) {
-            $optimizedPath = $optimizer->optimize($attachmentPath, 'audio');
-            if ($optimizedPath) {
-                Storage::disk('s3')->delete($attachmentPath);
-                $attachmentPath = $optimizedPath;
-                $message->forceFill(['attachment_path' => $optimizedPath])->save();
-            }
-        }
-        if ($attachmentPath && $attachmentType === 'photo') OptimizeStoredMedia::dispatch(ChatMessage::class, $message->id, 'attachment_path', $attachmentPath, 'image');
         $message->load($this->messageRelations());
         return response()->json(['data' => $this->decorateMessage($message)], 201);
     }
@@ -206,6 +203,18 @@ class ChatController extends Controller
         $chatMessage->update(['body' => $data['body'], 'edited_at' => now()]);
         $chatMessage->load($this->messageRelations());
         return response()->json(['data' => $this->decorateMessage($chatMessage)]);
+    }
+
+    public function destroy(Request $request, ChatMessage $chatMessage)
+    {
+        abort_unless($chatMessage->sender_id === $request->user()->id, 403);
+
+        ChatMessage::query()->where('reply_to_id', $chatMessage->id)->update(['reply_to_id' => null]);
+        $chatMessage->reactions()->delete();
+        if ($chatMessage->attachment_path) Storage::disk('s3')->delete($chatMessage->attachment_path);
+        $chatMessage->delete();
+
+        return response()->noContent();
     }
 
     public function toggleReaction(Request $request, ChatMessage $chatMessage)
@@ -277,6 +286,7 @@ class ChatController extends Controller
             if ($curator && $member->id === $curator->id) {
                 $member->setAttribute('name', 'Куратор');
                 $member->setAttribute('avatar_path', null);
+                $member->setAttribute('role', 'client');
             }
         });
         return $team;
@@ -284,12 +294,12 @@ class ChatController extends Controller
 
     private function generalRoom(): ChatRoom
     {
-        return ChatRoom::query()->firstOrCreate(['slug' => 'general'], ['name' => 'Общий чат']);
+        return ChatRoom::query()->firstOrCreate(['slug' => 'general'], ['name' => 'Чат ОБЩЕНИЕ']);
     }
 
     private function importantRoom(): ChatRoom
     {
-        return ChatRoom::query()->firstOrCreate(['slug' => 'important-info'], ['name' => 'Важная ИНФА']);
+        return ChatRoom::query()->firstOrCreate(['slug' => 'important-info'], ['name' => 'ИНФО']);
     }
 
     private function conversation(Request $request)
@@ -327,6 +337,7 @@ class ChatController extends Controller
         if ($isDirectChat && (int) $participant->id === self::CHAT_CURATOR_ID) {
             $participant->setAttribute('name', 'Куратор');
             $participant->setAttribute('avatar_path', null);
+            $participant->setAttribute('role', 'client');
             return;
         }
         if ($participant->avatar_path) $participant->setAttribute('avatar_path', app(MediaStorage::class)->secureCdnUrl($participant->avatar_path));
@@ -350,6 +361,11 @@ class ChatController extends Controller
     private function isStaff(User $user): bool
     {
         return in_array($user->role->value, ['curator', 'trainer', 'admin'], true);
+    }
+
+    private function canUseRoomChats(User $user): bool
+    {
+        return $user->role->value !== 'client' || ! in_array($user->staff_status, ['newcomer', 'dropped_out'], true);
     }
 
     /**

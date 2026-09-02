@@ -32,12 +32,13 @@ const accessEndLabel = computed(() => {
     }
 
     return new Intl.DateTimeFormat('ru-RU', {
-        day: 'numeric',
-        month: 'long',
+        day: '2-digit',
+        month: '2-digit',
         year: 'numeric',
         timeZone: 'Europe/Saratov',
     }).format(date);
 });
+const canRenewAccess = computed(() => !['newcomer', 'dropped_out'].includes(auth.user?.staff_status ?? ''));
 onMounted(async () => {
     if (auth.isTrainer) {
         const { data } = await api.get('/trainer/dashboard');
@@ -91,7 +92,7 @@ function participantCountLabel(count) {
       </div>
     </article>
 
-    <article class="glass-panel rounded-[28px] p-5">
+    <article class="glass-panel rounded-[28px] p-5 shadow-[0_14px_38px_rgba(109,56,168,0.16)]">
       <div class="mb-5 flex items-center justify-between">
         <div class="min-w-0">
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">сопровождение</p>
@@ -240,18 +241,22 @@ function participantCountLabel(count) {
         <span class="material-symbols-outlined text-primary">workspace_premium</span>
       </div>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-        <div class="rounded-2xl border border-primary/20 bg-primary/10 p-4">
+        <div class="rounded-2xl border border-primary/25 bg-[#342c3e] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Доступ к материалам</span>
           <strong class="mt-2 block text-lg text-primary">
-            {{ auth.user?.access_status === 'paid' && accessEndLabel ? `Доступ открыт до ${accessEndLabel}` : auth.user?.access_status === 'paid' ? 'Доступ открыт' : 'Доступ ограничен' }}
+            <template v-if="auth.user?.access_status === 'paid' && accessEndLabel">
+              Доступ открыт до <span class="text-white">{{ accessEndLabel }}</span>
+            </template>
+            <template v-else>{{ auth.user?.access_status === 'paid' ? 'Доступ открыт' : 'Доступ ограничен' }}</template>
           </strong>
-          <a
-            v-if="auth.user?.access_status !== 'paid'"
-            class="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl bg-primary px-5 py-2.5 text-sm font-extrabold text-[#470382] transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-container"
-            href="https://lazareva-secret.tb.ru/prodlenie"
-          >
-            Продлить
-          </a>
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <RouterLink to="/tariffs" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-primary px-4 py-2.5 text-sm font-extrabold text-[#470382] transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-container">
+              Выбрать тариф
+            </RouterLink>
+            <a v-if="canRenewAccess" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-primary/35 bg-white/5 px-4 py-2.5 text-sm font-extrabold text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-container" href="https://lazareva-secret.tb.ru/prodlenie" target="_blank" rel="noreferrer">
+              Продлить
+            </a>
+          </div>
         </div>
         <div class="rounded-2xl border border-white/10 bg-surface-container p-4">
           <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Пройдено тренировок</span>

@@ -15,6 +15,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 
 class FinalizeLiveEgressRecording implements ShouldQueue
@@ -57,7 +58,8 @@ class FinalizeLiveEgressRecording implements ShouldQueue
             Log::error('LiveKit Egress failed', ['stream_id' => $stream->id, 'egress' => $details]);
             return;
         }
-        if (! Storage::disk('s3')->exists($stream->egress_path)) {
+        $localRecording = storage_path('app/live-egress/'.basename($stream->egress_path));
+        if (! is_file($localRecording) || filesize($localRecording) === 0) {
             $this->release(10);
             return;
         }
@@ -100,7 +102,7 @@ class FinalizeLiveEgressRecording implements ShouldQueue
             throw new \RuntimeException('The live recording workout link was not persisted.');
         }
 
-        Storage::disk('s3')->delete($stream->egress_path);
+        File::delete($localRecording);
 
         User::query()->where('role', 'client')->where('access_status', 'paid')->each(
             fn (User $user) => Notification::query()->create([

@@ -34,4 +34,3 @@ class PurchaseService
         return ['purchase' => $purchase, 'payment' => $payment];
     }
 }
-

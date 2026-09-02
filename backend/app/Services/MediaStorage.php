@@ -9,12 +9,39 @@ use RuntimeException;
 
 class MediaStorage
 {
+    /**
+     * URLs created during the same interval must be identical so an edge cache
+     * can share the object between viewers. The URL never lives longer than
+     * the caller requested: it expires at the requested TTL from the start of
+     * its current five-minute signing interval.
+     */
+    private const CDN_SIGNING_WINDOW_SECONDS = 172800;
+
+    private const PRIVATE_MEDIA_CACHE_CONTROL = 'public, max-age=172800, s-maxage=172800, immutable';
+
     public function store(UploadedFile $file, string $directory, bool $public = false): string
     {
         $extension = strtolower($file->guessExtension() ?: $file->getClientOriginalExtension() ?: 'bin');
         $path = trim($directory, '/').'/'.Str::uuid().'.'.$extension;
 
         $this->putFile($path, $file->getRealPath(), $file->getMimeType() ?: 'application/octet-stream', $public);
+
+        return $path;
+    }
+
+    /** Upload only the locally optimized media file to object storage. */
+    public function storeOptimized(UploadedFile $file, string $directory, string $type, bool $public = false): string
+    {
+        $path = app(MediaOptimizer::class)->optimizeLocalFile(
+            $file->getRealPath(),
+            $directory,
+            $type,
+            $public,
+        );
+
+        if (! $path) {
+            throw new RuntimeException('Could not optimize the uploaded media file.');
+        }
 
         return $path;
     }
@@ -42,9 +69,9 @@ class MediaStorage
         $stored = Storage::disk('s3')->put($path, $stream, [
             'visibility' => $public ? 'public' : 'private',
             'ContentType' => $contentType,
-            // Objects remain private in S3. Signed CDN URLs keep access protected,
-            // while s-maxage lets the shared edge cache serve repeat views for an hour.
-            'CacheControl' => $public ? 'public, max-age=31536000, immutable' : 'public, max-age=0, s-maxage=3600, must-revalidate',
+            // Objects remain private in S3. Their signed URL is the access
+            // control; immutable media can therefore be cached for its URL TTL.
+            'CacheControl' => $public ? 'public, max-age=31536000, immutable' : self::PRIVATE_MEDIA_CACHE_CONTROL,
         ]);
         fclose($stream);
 
@@ -81,10 +108,18 @@ class MediaStorage
         }
 
         $resourcePath = '/'.ltrim($path, '/');
-        $expires = time() + $ttlSeconds;
+        $expires = $this->sharedCdnExpiry($ttlSeconds);
         $signature = rtrim(strtr(base64_encode(md5($secret.$resourcePath.($ip ?? '').$expires, true)), '+/', '-_'), '=');
 
         return $base.'/md5('.$signature.','.$expires.')'.$resourcePath;
+    }
+
+    private function sharedCdnExpiry(int $ttlSeconds): int
+    {
+        $ttlSeconds = max(1, $ttlSeconds);
+        $windowStart = intdiv(time(), self::CDN_SIGNING_WINDOW_SECONDS) * self::CDN_SIGNING_WINDOW_SECONDS;
+
+        return $windowStart + self::CDN_SIGNING_WINDOW_SECONDS + $ttlSeconds;
     }
 
     public function secureCdnDownloadUrl(string $path, string $filename, int $ttlSeconds = 3600): string

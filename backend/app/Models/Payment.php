@@ -13,4 +13,3 @@ class Payment extends Model
         return ['metadata' => 'array'];
     }
 }
-

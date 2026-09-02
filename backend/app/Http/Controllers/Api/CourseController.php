@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\OptimizeStoredMedia;
 use App\Models\Course;
 use App\Models\CourseModule;
 use App\Models\Lesson;
@@ -51,7 +50,6 @@ class CourseController extends Controller
     public function index(Request $request)
     {
         $isPaid = $request->user()->access_status === 'paid';
-
         return response()->json([
             'data' => Course::query()
                 ->where('status', 'published')
@@ -125,11 +123,12 @@ class CourseController extends Controller
         $uploadedFile = $request->file('file');
         $filePath = null;
         $fileMime = $uploadedFile?->getMimeType();
-        if ($uploadedFile) {
-            $filePath = $media->store($uploadedFile, 'course-materials');
-        }
-
         $type = str_starts_with((string) $fileMime, 'video/') ? 'video' : 'text';
+        if ($uploadedFile) {
+            $filePath = $type === 'video'
+                ? $media->storeOptimized($uploadedFile, 'course-materials', 'video')
+                : $media->store($uploadedFile, 'course-materials');
+        }
 
         $lesson = Lesson::query()->create([
             'module_id' => $module->id,
@@ -141,10 +140,6 @@ class CourseController extends Controller
             'sort_order' => (int) $module->lessons()->max('sort_order') + 1,
             'published_at' => now(),
         ]);
-        if ($type === 'video' && $filePath) {
-            OptimizeStoredMedia::dispatch(Lesson::class, $lesson->id, 'video_path', $filePath, 'video');
-        }
-
         User::query()
             ->where('role', 'client')
             ->where('access_status', 'paid')

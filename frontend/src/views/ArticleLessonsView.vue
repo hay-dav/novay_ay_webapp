@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/services/api';
 import VideoWatermark from '@/components/VideoWatermark.vue';
+import ContentLoadingState from '@/components/ContentLoadingState.vue';
 
 const auth = useAuthStore();
 const props = defineProps({ section: { type: String, default: 'lessons' } });
@@ -13,6 +14,7 @@ const sectionCopy = computed(() => ({
 }[props.section]));
 const allowVideo = computed(() => props.section === 'lessons');
 const lessons = ref([]);
+const lessonsLoading = ref(true);
 const searchQuery = ref('');
 const coverPreview = ref('');
 const coverInput = ref(null);
@@ -34,8 +36,14 @@ const filteredLessons = computed(() => {
 });
 
 async function loadLessons() {
-    const { data } = await api.get('/article-lessons', { params: { section: props.section } });
-    lessons.value = data.data;
+    lessonsLoading.value = true;
+    try {
+        const { data } = await api.get('/article-lessons', { params: { section: props.section } });
+        lessons.value = data.data;
+    }
+    finally {
+        lessonsLoading.value = false;
+    }
 }
 function addTextBlock() {
     form.value.blocks.push({ type: 'text', content: '' });
@@ -258,7 +266,8 @@ onBeforeUnmount(() => {
 
     <p v-if="orderingError" class="rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200" role="alert">{{ orderingError }}</p>
 
-    <div v-if="filteredLessons.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+    <ContentLoadingState v-if="lessonsLoading" :label="`Загружаем: ${sectionCopy.title.toLocaleLowerCase('ru-RU')}…`" />
+    <div v-else-if="filteredLessons.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
       <article v-for="(lesson, index) in filteredLessons" :key="lesson.id" class="glass-panel group relative overflow-hidden rounded-[28px] transition hover:-translate-y-1 hover:border-primary/35 focus-within:ring-2 focus-within:ring-primary">
         <div v-if="canCreateLessons && !searchQuery.trim()" class="absolute right-3 top-3 z-10 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || index === 0" :aria-label="`Переместить урок «${lesson.title}» выше`" @click.stop="moveLesson(lesson, -1)"><span class="material-symbols-outlined text-[20px]">arrow_upward</span></button>

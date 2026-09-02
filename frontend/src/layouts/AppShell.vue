@@ -91,6 +91,7 @@ const navItems = computed(() => {
         { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
         { label: 'База знаний', to: '/knowledge-base', icon: 'library_books' },
         { label: 'Прогресс', to: '/progress', icon: 'assignment' },
+        { label: 'Тарифы', to: '/tariffs', icon: 'sell' },
         { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
     ];
 });
@@ -103,6 +104,12 @@ const orderedNavItems = computed(() => [...visibleNavItems.value].sort((first, s
     return 0;
 }));
 const mobileMenuItems = computed(() => visibleNavItems.value.filter((item) => !['/app', '/chat'].includes(item.to)));
+function openChatDirectory() {
+    mobileNavigationOpen.value = false;
+    // When the user is already inside a conversation, the route does not
+    // change. Notify ChatView explicitly so the chat icon still opens its list.
+    window.dispatchEvent(new Event('novaya-ya:show-chat-list'));
+}
 async function logout() {
     mobileProfileMenuOpen.value = false;
     await disableWebPush().catch(() => undefined);
@@ -316,6 +323,7 @@ onBeforeUnmount(() => {
           :to="item.to"
           class="tap-clear relative flex h-12 items-center gap-3 rounded-2xl px-4 text-sm font-semibold text-on-muted transition hover:bg-white/5 hover:text-primary"
           active-class="bg-primary-container/30 text-primary shadow-[0_8px_26px_rgba(109,56,168,0.18)]"
+          @click="item.to === '/chat' && openChatDirectory()"
         >
           <span class="material-symbols-outlined text-[22px]">{{ item.icon }}</span>
           {{ item.label }}
@@ -429,7 +437,7 @@ onBeforeUnmount(() => {
       <div class="mx-auto grid h-20 max-w-md grid-cols-3 items-center">
         <RouterLink to="/app" class="tap-clear flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined mb-1 text-[24px]">home</span><span class="text-[10px] font-semibold">Главная</span></RouterLink>
         <button class="tap-clear flex flex-col items-center justify-center text-on-muted transition" :class="mobileNavigationOpen ? 'font-bold text-primary' : ''" type="button" :aria-expanded="mobileNavigationOpen" @click="mobileNavigationOpen = !mobileNavigationOpen"><span class="material-symbols-outlined leading-none text-primary" style="font-size: 35px">apps</span><span class="text-[10px] font-semibold">Меню</span></button>
-        <RouterLink to="/chat" class="tap-clear relative flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined mb-1 text-[24px]">forum</span><span class="text-[10px] font-semibold">Чаты</span><span v-if="unreadChatCount" class="absolute right-[26%] top-2 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]">{{ unreadChatCount > 99 ? '99+' : unreadChatCount }}</span></RouterLink>
+        <RouterLink to="/chat" class="tap-clear relative flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="openChatDirectory"><span class="material-symbols-outlined mb-1 text-[24px]">forum</span><span class="text-[10px] font-semibold">Чаты</span><span v-if="unreadChatCount" class="absolute right-[26%] top-2 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]">{{ unreadChatCount > 99 ? '99+' : unreadChatCount }}</span></RouterLink>
       </div>
     </nav>
   </div>

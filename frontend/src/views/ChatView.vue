@@ -28,6 +28,8 @@ const chatError = ref('');
 const chatPushChanging = ref(false);
 const chatPushPreferences = ref({});
 const hiddenMessageAvatarIds = ref(new Set());
+const voicePlaybackRates = ref({});
+const voicePlayers = new Map();
 let mediaRecorder; let recordingStream; let audioChunks = []; let messagePressTimer;
 let messagesRequestId = 0;
 
@@ -43,7 +45,7 @@ const activeConversation = computed(() => activeChat.value.conversation ?? null)
 const chatNotificationKey = computed(() => isRoom.value ? `room:${activeRoomSlug.value}` : (selectedPeer.value ? `direct:${selectedPeer.value.id}` : null));
 const chatPushEnabled = computed(() => chatNotificationKey.value ? chatPushPreferences.value[chatNotificationKey.value] !== false : true);
 const chatName = computed(() => isRoom.value ? (activeRoom.value?.name ?? 'Общий чат') : selectedPeer.value?.name ?? 'Чат');
-const chatSubtitle = computed(() => isRoom.value ? (isImportant.value ? 'Только для важной информации' : 'Все участники проекта') : (selectedPeer.value?.role === 'client' ? 'Участница' : (selectedPeer.value?.role === 'admin' ? 'Администратор' : 'Куратор')));
+const chatSubtitle = computed(() => isRoom.value ? (isImportant.value ? 'Только для важной информации' : 'Все участники проекта') : (selectedPeer.value?.role === 'client' ? '' : (selectedPeer.value?.role === 'admin' ? 'Администратор' : 'Куратор')));
 const chatItems = computed(() => [
     ...(important.value ? [{ type: 'important', id: 'important-info', name: important.value.name, subtitle: 'Важная информация от администратора', icon: 'campaign', ...important.value }] : []),
     ...(general.value ? [{ type: 'general', id: 'general', name: general.value.name, subtitle: 'Все участники проекта', icon: 'groups', ...general.value }] : []),
@@ -58,7 +60,21 @@ function formatTime(value) {
 }
 function formatUnread(count) { return count > 99 ? '99+' : String(count); }
 function voiceExtension(mimeType) { return mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm'; }
+function voicePlaybackRate(messageId) { return voicePlaybackRates.value[messageId] ?? 1; }
+function setVoicePlayer(messageId, player) { if (player) voicePlayers.set(messageId, player); else voicePlayers.delete(messageId); }
+function setVoicePlaybackRate(messageId, event) {
+    const rate = Number(event.target.value);
+    voicePlaybackRates.value = { ...voicePlaybackRates.value, [messageId]: rate };
+    const player = voicePlayers.get(messageId);
+    if (player) player.playbackRate = rate;
+}
 function preview(item) { return item.last_message || 'Сообщений пока нет'; }
+function messageParts(value) {
+    return String(value ?? '').split(/(https?:\/\/[^\s<]+)/gi).filter(Boolean).map((part) => ({
+        value: part,
+        isLink: /^https?:\/\//i.test(part),
+    }));
+}
 
 const orderedOwnChatItems = computed(() => [...chatItems.value].sort((first, second) => {
     if (first.type === 'important') return -1;
@@ -144,6 +160,8 @@ async function loadDirectory() {
     important.value = importantResponse.data.data;
     mentionables.value = mentionablesResponse.data.data ?? [];
     if (conversationsResponse) curatorConversations.value = conversationsResponse.data.data ?? [];
+    if (!general.value && !important.value && isRoom.value)
+        activeChat.value = { type: 'direct', peerId: peers.value[0]?.id ?? null };
 }
 async function loadChatPushPreferences() {
     const { data } = await api.get('/chat/notification-preferences');
@@ -194,11 +212,8 @@ async function returnToOwnChats() {
 async function refreshForNotification(event) {
     const notification = event instanceof CustomEvent ? event.detail : event;
     if (notification?.type !== 'chat') return;
-    const isCurrentGeneral = notification.data?.room_slug === activeRoomSlug.value && isRoom.value;
-    const isCurrentDirect = Number(notification.data?.sender_id) === Number(selectedPeer.value?.id);
     const tasks = [loadDirectory().catch(() => undefined)];
-    if ((isCurrentGeneral || isCurrentDirect) && (!mobileListOpen.value || desktopChatLayout()))
-        tasks.push(loadMessages(true));
+    if (!mobileListOpen.value || desktopChatLayout()) tasks.push(loadMessages(true));
     await Promise.all(tasks);
 }
 
@@ -238,6 +253,20 @@ function cancelMessagePress() { window.clearTimeout(messagePressTimer); }
 function closeMessageMenu() { contextMessage.value = null; }
 function replyFromMenu() { startReply(contextMessage.value); closeMessageMenu(); }
 function editFromMenu() { startEdit(contextMessage.value); closeMessageMenu(); }
+async function deleteFromMenu() {
+    const message = contextMessage.value;
+    if (!message || Number(message.sender_id) !== Number(auth.user?.id)) return;
+    try {
+        await api.delete(`/chat/messages/${message.id}`);
+        messages.value = messages.value.filter((item) => item.id !== message.id);
+        if (replyTo.value?.id === message.id || editingMessage.value?.id === message.id) cancelComposerMode();
+        await loadDirectory();
+    } catch (error) {
+        chatError.value = error.response?.data?.message ?? 'Не удалось удалить сообщение.';
+    } finally {
+        closeMessageMenu();
+    }
+}
 async function reactFromMenu(emoji) { await toggleReaction(contextMessage.value, emoji); closeMessageMenu(); }
 function insertMention(user) { body.value = body.value.replace(/@([^\s@]*)$/, `@${user.name} `); }
 async function toggleReaction(message, emoji) {
@@ -270,8 +299,8 @@ async function toggleVoiceRecording() {
         mediaRecorder.start(); recording.value = true;
     } catch { chatError.value = 'Не удалось получить доступ к микрофону.'; }
 }
-onMounted(async () => { await Promise.all([loadDirectory(), loadChatPushPreferences()]); if (desktopChatLayout()) await loadMessages(); window.addEventListener('novaya-ya:notification', refreshForNotification); });
-onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', refreshForNotification); window.clearTimeout(messagePressTimer); if (mediaRecorder?.state === 'recording') mediaRecorder.stop(); recordingStream?.getTracks().forEach((track) => track.stop()); });
+onMounted(async () => { await Promise.all([loadDirectory(), loadChatPushPreferences()]); if (desktopChatLayout()) await loadMessages(); window.addEventListener('novaya-ya:notification', refreshForNotification); window.addEventListener('novaya-ya:show-chat-list', showChatList); });
+onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', refreshForNotification); window.removeEventListener('novaya-ya:show-chat-list', showChatList); window.clearTimeout(messagePressTimer); if (mediaRecorder?.state === 'recording') mediaRecorder.stop(); recordingStream?.getTracks().forEach((track) => track.stop()); });
 </script>
 
 <template>
@@ -305,9 +334,17 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
             <div class="max-w-[88%] select-none rounded-2xl p-3 text-sm leading-6 sm:max-w-[75%]" :class="message.sender_id === auth.user?.id ? 'rounded-br-md bg-primary text-[#470382]' : 'rounded-bl-md bg-surface-container text-on-surface'" @pointerdown="startMessagePress(message)" @pointerup="cancelMessagePress" @pointerleave="cancelMessagePress" @pointercancel="cancelMessagePress" @contextmenu.prevent="contextMessage = message">
               <div v-if="isRoom || message.sender_id !== auth.user?.id" class="mb-1 flex justify-between gap-3 text-xs font-extrabold"><span>{{ messageSenderName(message) }}</span><span>{{ formatTime(message.created_at) }}</span></div>
               <button v-if="message.reply_to" class="mb-2 block w-full border-l-2 border-primary/70 bg-black/10 px-2 text-left text-xs" type="button" @click="startReply(message.reply_to)">{{ messageSenderName(message.reply_to) }}: {{ message.reply_to.body }}</button>
-              <p v-if="message.body" class="whitespace-pre-wrap break-words">{{ message.body }} <small v-if="message.edited_at" class="opacity-60">(изм.)</small></p>
+              <p v-if="message.body" class="whitespace-pre-wrap break-words"><template v-for="(part, index) in messageParts(message.body)" :key="`${message.id}-${index}`"><a v-if="part.isLink" class="break-all font-semibold underline decoration-current/70 underline-offset-2 hover:opacity-80" :href="part.value" target="_blank" rel="noopener noreferrer" @click.stop>{{ part.value }}</a><template v-else>{{ part.value }}</template></template> <small v-if="message.edited_at" class="opacity-60">(изм.)</small></p>
               <button v-if="message.attachment_type === 'photo'" class="mt-2 block overflow-hidden rounded-xl" type="button" @click="activePhoto = message.attachment_path"><img class="max-h-80 rounded-xl object-cover" :src="message.attachment_path" alt="Фото" @load="scrollToLatest" /></button>
-              <audio v-else-if="message.attachment_type === 'voice'" class="chat-voice mt-2" controls @loadedmetadata="scrollToLatest"><source :src="message.attachment_path" type="audio/mp4" /></audio>
+              <div v-else-if="message.attachment_type === 'voice'" class="mt-2 flex items-center gap-2">
+                <audio :ref="(player) => setVoicePlayer(message.id, player)" class="chat-voice" controls @loadedmetadata="scrollToLatest"><source :src="message.attachment_path" type="audio/mp4" /></audio>
+                <label class="sr-only" :for="`voice-rate-${message.id}`">Скорость воспроизведения</label>
+                <select :id="`voice-rate-${message.id}`" class="chat-voice-rate" :value="voicePlaybackRate(message.id)" title="Скорость воспроизведения" aria-label="Скорость воспроизведения" @pointerdown.stop @change="setVoicePlaybackRate(message.id, $event)">
+                  <option :value="1">1×</option>
+                  <option :value="1.5">1.5×</option>
+                  <option :value="2">2×</option>
+                </select>
+              </div>
               <div v-if="message.reactions?.length" class="mt-2 flex flex-wrap gap-1 text-xs"><span v-for="reaction in message.reactions" :key="reaction.id" class="rounded-full bg-black/15 px-1">{{ reaction.emoji }}</span></div>
             </div>
             <span v-if="message.sender_id === auth.user?.id && showMessageAvatar(message)" class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-[10px] font-extrabold text-primary"><img v-if="messageAvatar(message)" class="h-full w-full object-cover" :src="messageAvatar(message)" alt="Ваш аватар" @error="hideMessageAvatar(message.id)" /><span v-else aria-hidden="true">{{ messageAvatarInitials(message) }}</span></span>
@@ -333,6 +370,7 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
         <button class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold hover:bg-white/5" type="button" @click="replyFromMenu"><span class="material-symbols-outlined text-primary">reply</span>Ответить</button>
         <div class="flex items-center gap-2 px-4 py-2"><span class="text-sm text-on-muted">Реакция</span><button v-for="emoji in ['❤️', '👍', '🔥', '👏']" :key="emoji" class="grid h-10 w-10 place-items-center rounded-full bg-surface-high text-lg hover:bg-primary/20" type="button" @click="reactFromMenu(emoji)">{{ emoji }}</button></div>
         <button v-if="contextMessage.sender_id === auth.user?.id" class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold hover:bg-white/5" type="button" @click="editFromMenu"><span class="material-symbols-outlined text-primary">edit</span>Изменить</button>
+        <button v-if="contextMessage.sender_id === auth.user?.id" class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold text-red-200 hover:bg-red-500/10" type="button" @click="deleteFromMenu"><span class="material-symbols-outlined">delete</span>Удалить</button>
         <button class="mt-1 w-full rounded-2xl px-4 py-3 text-sm text-on-muted hover:bg-white/5" type="button" @click="closeMessageMenu">Отмена</button>
       </div>
     </div>
@@ -344,7 +382,10 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
 .chat-page { min-height: min(760px, calc(100dvh - 9rem)); }
 .chat-shell { height: calc(100dvh - 10.5rem); min-height: 32rem; }
 .chat-directory { flex-direction: column; }
-.chat-voice { display: block; width: 100%; min-width: 200px; }
+.chat-voice { display: block; width: 100%; min-width: 0; }
+.chat-voice-rate { min-height: 2.25rem; flex: 0 0 auto; appearance: none; border: 1px solid rgba(219, 184, 255, 0.35); border-radius: 0.75rem; background: #211e25; color: #dbb8ff; cursor: pointer; font-size: 0.75rem; font-weight: 800; padding: 0 0.6rem; }
+.chat-voice-rate:focus-visible { outline: 2px solid #dbb8ff; outline-offset: 2px; }
+.chat-voice-rate option { background: #211e25; color: #f4eff7; }
 .brand-scrollbar { scrollbar-color: #8c55c7 #211e25; scrollbar-width: thin; }
 .brand-scrollbar::-webkit-scrollbar { width: 8px; }
 .brand-scrollbar::-webkit-scrollbar-track { background: #211e25; border-radius: 999px; }
@@ -353,7 +394,7 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
   .chat-page { min-height: 0; width: 100%; }
   .chat-shell { width: 95%; min-width: 0; height: calc(100dvh - 5rem); min-height: 0; margin-inline: auto; border-radius: 1.75rem; }
   .chat-dialog { min-width: 0; width: 100%; }
-  .chat-voice { width: clamp(200px, calc(100vw - 6rem), 280px); min-width: 0; max-width: 100%; }
+  .chat-voice { width: clamp(150px, calc(100vw - 9rem), 260px); max-width: 100%; }
   .brand-scrollbar { padding: 1rem; overscroll-behavior: contain; }
   .brand-scrollbar > div { max-width: calc(100% - 0.5rem); overflow-wrap: anywhere; word-break: break-word; }
   .chat-dialog form { display: grid; grid-template-columns: 2.75rem 2.75rem minmax(0, 1fr) 2.75rem; gap: 0.5rem; min-width: 0; padding: 0.75rem; }

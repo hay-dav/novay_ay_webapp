@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\OptimizeStoredMedia;
 use App\Models\Notification;
 use App\Models\LiveStream;
 use App\Models\User;
@@ -88,13 +87,16 @@ class WorkoutController extends Controller
             'cover' => ['nullable', 'image', 'max:10240'],
             'video' => ['required', 'file', 'mimetypes:video/mp4,video/webm,video/quicktime,video/x-m4v', 'max:2097152'],
             'access_level' => ['required', 'in:free,paid'],
+            'section' => ['nullable', 'in:workouts,experts'],
         ]);
+        $section = $validated['section'] ?? 'workouts';
+        abort_if($section === 'experts' && ! in_array($request->user()->role->value, ['admin', 'curator'], true), 403);
 
         $media = app(MediaStorage::class);
         $coverPath = $request->file('cover')
-            ? $media->store($request->file('cover'), 'workouts/covers', true)
+            ? $media->storeOptimized($request->file('cover'), 'workouts/covers', 'image', true)
             : null;
-        $videoPath = $media->store($request->file('video'), 'workouts/videos');
+        $videoPath = $media->storeOptimized($request->file('video'), 'workouts/videos', 'video');
 
         $workout = Workout::query()->create([
             'title' => $validated['title'],
@@ -104,22 +106,17 @@ class WorkoutController extends Controller
             'duration_seconds' => 0,
             'timer_seconds' => 45,
             'access_level' => $validated['access_level'],
-            'section' => 'workouts',
+            'section' => $section,
         ]);
-        if ($coverPath) {
-            OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'cover_path', $coverPath, 'image', true);
-        }
-        OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
-
         User::query()
             ->where('role', 'client')
             ->when($workout->access_level === 'paid', fn ($query) => $query->where('access_status', 'paid'))
             ->each(fn (User $user) => Notification::query()->create([
                 'user_id' => $user->id,
                 'type' => 'workout',
-                'title' => 'Добавлена новая тренировка',
-                'body' => 'Тренировка «'.$workout->title.'» уже доступна в вашем кабинете.',
-                'data' => ['workout_id' => $workout->id],
+                'title' => $section === 'experts' ? 'Добавлен новый эфир' : 'Добавлена новая тренировка',
+                'body' => ($section === 'experts' ? 'Эфир' : 'Тренировка').' «'.$workout->title.'» уже доступен в вашем кабинете.',
+                'data' => ['workout_id' => $workout->id, 'link_url' => $section === 'experts' ? '/expert-lives' : '/workouts'],
             ]));
 
         return response()->json(['data' => $workout], 201);

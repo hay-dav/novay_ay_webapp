@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue';
+import { tariffs } from '@/data/tariffs';
 
 const heroImage = '/public-image/HeroFoto.jpeg';
 const resultImages = [
@@ -20,40 +21,6 @@ const courseItems = [
     { number: '04', title: 'Бонусы', text: 'Прямые эфиры с приглашенными экспертами: психологом, косметологом, визажистом и другими.' },
     { number: '05', title: 'Чат единомышленников', text: 'Общение в дружном и поддерживающем чате единомышленников.' },
     { number: '06', title: 'Подкасты о важном', text: 'На курсе уделяем время не только питанию и спорту, но и работе над собой.' },
-];
-const tariffs = [
-    {
-        title: 'Личное сопровождение с куратором',
-        period: '1 месяц',
-        price: '6 990 ₽',
-        oldPrice: '8 555 ₽',
-        href: 'https://lazareva-secret.tb.ru/555/oplata',
-        image: '/public-image/2f54616f-69d4-427c-956f-1641a54adfcb-10359097.jpeg',
-    },
-    {
-        title: 'Личное сопровождение с куратором',
-        period: '3 месяца',
-        price: '12 990 ₽',
-        oldPrice: '16 990 ₽',
-        href: 'https://lazareva-secret.tb.ru/555/page2',
-        image: '/public-image/771ef69d-9c75-4e2e-9386-2a04eae07667-10365209.jpeg',
-    },
-    {
-        title: 'VIP сопровождение с Анастасией',
-        period: '1 месяц',
-        price: '13 555 ₽',
-        oldPrice: '16 555 ₽',
-        href: 'https://lazareva-secret.tb.ru/555/page3',
-        image: '/public-image/89a9161d-54a6-4120-ba4e-de4ada261f91-10365407.jpeg',
-    },
-    {
-        title: 'VIP сопровождение с Анастасией',
-        period: '3 месяца',
-        price: '29 555 ₽',
-        oldPrice: '32 555 ₽',
-        href: 'https://lazareva-secret.tb.ru/555/page4',
-        image: '/public-image/6a0a0768-095a-4b34-99f4-7ca46a0babb3-10365406.jpeg',
-    },
 ];
 const advantages = [
     {
@@ -85,6 +52,7 @@ const reviewImages = [
 const resultTrack = ref(null);
 const activeResult = ref(0);
 const resultSlideStep = 335;
+const isContactModalOpen = ref(false);
 
 function goToResult(index) {
     const nextIndex = Math.min(Math.max(index, 0), resultImages.length - 1);
@@ -108,7 +76,7 @@ function updateActiveResult() {
 </script>
 
 <template>
-  <main class="app-gradient min-h-screen overflow-x-hidden text-on-surface">
+  <main class="app-gradient min-h-screen overflow-x-hidden text-on-surface" @keydown.esc="isContactModalOpen = false">
     <header class="fixed inset-x-0 top-0 z-50 border-b border-white/10 bg-surface/75 backdrop-blur-xl">
       <div class="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 lg:px-10">
         <a class="flex h-12 items-center" href="#hero" aria-label="Новая Я">
@@ -299,6 +267,16 @@ function updateActiveResult() {
           </div>
         </article>
       </div>
+      <div class="mt-10 flex justify-center">
+        <button
+          type="button"
+          class="inline-flex min-h-14 items-center justify-center gap-2 rounded-2xl border border-primary/40 bg-primary/10 px-8 py-4 text-center font-extrabold text-primary transition hover:bg-primary hover:text-[#470382] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+          @click="isContactModalOpen = true"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">chat</span>
+          Связаться со мной
+        </button>
+      </div>
     </section>
 
     <section class="mx-auto max-w-7xl px-5 py-20 lg:px-10">
@@ -355,5 +333,53 @@ function updateActiveResult() {
         </RouterLink>
       </div>
     </footer>
+
+    <div
+      v-if="isContactModalOpen"
+      class="fixed inset-0 z-[70] flex items-start bg-black/70 p-4 pt-[calc(env(safe-area-inset-top)+1rem)] backdrop-blur-sm sm:items-center sm:justify-center sm:p-4"
+      role="presentation"
+      @click.self="isContactModalOpen = false"
+    >
+      <section
+        class="w-full max-w-md rounded-[28px] border border-white/15 bg-surface-container p-6 shadow-[0_24px_80px_rgba(0,0,0,0.52)] sm:p-7"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="contact-modal-title"
+      >
+        <div class="flex items-start justify-between gap-5">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">на связи</p>
+            <h2 id="contact-modal-title" class="mt-2 text-2xl font-extrabold">Выберите мессенджер</h2>
+            <p class="mt-2 text-sm leading-6 text-on-muted">Напишите Анастасии в удобном для вас приложении.</p>
+          </div>
+          <button
+            type="button"
+            class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 text-on-muted transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            aria-label="Закрыть окно"
+            @click="isContactModalOpen = false"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
+          </button>
+        </div>
+
+        <div class="mt-6 grid gap-3">
+          <a href="https://t.me/lazareva_secret" target="_blank" rel="noreferrer" class="flex min-h-14 items-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 font-bold transition hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <span class="grid h-9 w-9 place-items-center overflow-hidden" aria-hidden="true"><img src="/public-image/messengers/telegram.svg" alt="" class="h-full w-full object-contain" /></span>
+            Написать в Telegram
+            <span class="material-symbols-outlined ml-auto text-primary" aria-hidden="true">north_east</span>
+          </a>
+          <a href="https://vk.ru/write7165053" target="_blank" rel="noreferrer" class="flex min-h-14 items-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 font-bold transition hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-xl bg-[#0077FF] p-1.5" aria-hidden="true"><img src="/public-image/messengers/vk.svg" alt="" class="h-full w-full object-contain" /></span>
+            Написать ВКонтакте
+            <span class="material-symbols-outlined ml-auto text-primary" aria-hidden="true">north_east</span>
+          </a>
+          <a href="https://max.ru/u/f9LHodD0cOJuQ9GthvaLkymo-D4jEMit8euYruCV-6YBJ1-BSJMZt4guXQg" target="_blank" rel="noreferrer" class="flex min-h-14 items-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 font-bold transition hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-xl bg-white p-1.5" aria-hidden="true"><img src="/public-image/messengers/max.svg" alt="" class="h-full w-full object-contain" /></span>
+            Написать в Max
+            <span class="material-symbols-outlined ml-auto text-primary" aria-hidden="true">north_east</span>
+          </a>
+        </div>
+      </section>
+    </div>
   </main>
 </template>

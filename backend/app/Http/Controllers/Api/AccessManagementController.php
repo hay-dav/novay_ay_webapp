@@ -66,7 +66,7 @@ class AccessManagementController extends Controller
 
         return response()->json(['data' => [
             'users' => $users,
-            'active_count' => User::query()->where('role', 'client')->where('access_status', 'paid')->count(),
+            'active_count' => User::query()->where('role', 'client')->count(),
             'expired' => $expiredPeriods,
             'scheduled' => $scheduledPeriods,
         ]]);
@@ -83,7 +83,7 @@ class AccessManagementController extends Controller
                 'distinct',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
             ],
-            'starts_on' => ['required', 'date_format:Y-m-d', 'after_or_equal:today'],
+            'starts_on' => ['required', 'date_format:Y-m-d'],
             'months' => ['required', 'integer', 'min:1', 'max:24'],
         ]);
 
@@ -91,6 +91,21 @@ class AccessManagementController extends Controller
         if (! in_array($startsOn->day, [2, 15], true)) {
             throw ValidationException::withMessages([
                 'starts_on' => 'Дата старта должна быть 2-го или 15-го числа месяца.',
+            ]);
+        }
+
+        $earliestAllowedStart = now()->startOfDay();
+        $previousStartDates = 0;
+        while ($previousStartDates < 2) {
+            $earliestAllowedStart->subDay();
+            if (in_array($earliestAllowedStart->day, [2, 15], true)) {
+                $previousStartDates++;
+            }
+        }
+
+        if ($startsOn->lt($earliestAllowedStart)) {
+            throw ValidationException::withMessages([
+                'starts_on' => 'Можно выбрать только одну из двух предыдущих дат старта.',
             ]);
         }
 

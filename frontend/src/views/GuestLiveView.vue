@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ConnectionState, Room, RoomEvent, Track } from 'livekit-client';
 import { api } from '@/services/api';
 import { useRoute } from 'vue-router';
@@ -7,6 +7,7 @@ import { useRoute } from 'vue-router';
 const route = useRoute();
 const video = ref(null);
 const localVideo = ref(null);
+const streamContainer = ref(null);
 const hostName = ref('Тренер');
 const loading = ref(false);
 const connected = ref(false);
@@ -18,6 +19,7 @@ const canPublish = ref(false);
 const joining = ref(false);
 const participantsOpen = ref(false);
 const participants = ref([]);
+const fullscreen = ref(false);
 
 let room;
 let hostIdentity = '';
@@ -221,7 +223,28 @@ async function toggleCamera() {
     }
 }
 
+async function toggleFullscreen() {
+    try {
+        if (document.fullscreenElement) {
+            await document.exitFullscreen();
+        }
+        else {
+            await streamContainer.value?.requestFullscreen();
+        }
+    }
+    catch {
+        error.value = 'Полноэкранный режим недоступен в этом браузере.';
+    }
+}
+
+function syncFullscreenState() {
+    fullscreen.value = document.fullscreenElement === streamContainer.value;
+}
+
+onMounted(() => document.addEventListener('fullscreenchange', syncFullscreenState));
+
 onBeforeUnmount(() => {
+    document.removeEventListener('fullscreenchange', syncFullscreenState);
     audioElements.forEach((element) => element.remove());
     audioElements.clear();
     room?.disconnect();
@@ -249,9 +272,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </header>
-      <div class="relative aspect-video bg-black">
+      <div ref="streamContainer" class="relative aspect-video bg-black">
         <video ref="video" class="h-full w-full object-contain" autoplay playsinline />
         <video v-if="cameraEnabled" ref="localVideo" class="absolute bottom-3 left-3 h-28 w-20 rounded-xl border border-white/30 bg-black object-cover" autoplay muted playsinline />
+        <button v-if="connected" class="absolute right-3 top-3 grid h-11 w-11 place-items-center rounded-xl border border-white/20 bg-black/55 text-white transition hover:bg-black/75" type="button" :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'Развернуть на весь экран'" :title="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" @click="toggleFullscreen">
+          <span class="material-symbols-outlined">{{ fullscreen ? 'fullscreen_exit' : 'fullscreen' }}</span>
+        </button>
         <div v-if="loading" class="absolute inset-0 grid place-items-center bg-black/60 text-sm font-bold">Подключаемся к эфиру…</div>
         <div v-else-if="!connected" class="absolute inset-0 grid place-items-center bg-black/40 p-6 text-center">
           <button class="rounded-xl bg-primary px-5 py-3 text-sm font-extrabold text-white" type="button" :disabled="joining" @click="connect">{{ joinLabel }}</button>

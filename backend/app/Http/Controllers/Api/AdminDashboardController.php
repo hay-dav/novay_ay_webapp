@@ -31,12 +31,17 @@ class AdminDashboardController extends Controller
 
         $clientsCount = (clone $clientsQuery)->count();
         $allClientIds = (clone $clientsQuery)->pluck('id');
+        $canSeeStaffStatus = in_array($request->user()->role->value, ['admin', 'curator'], true);
+        $clientColumns = ['id', 'name', 'email', 'phone', 'avatar_path', 'access_status', 'group_name', 'tags', 'access_ends_at', 'created_at'];
+        if ($canSeeStaffStatus) $clientColumns[] = 'staff_status';
 
         $clients = $clientsQuery
             ->with('clientProfile:id,user_id,goal')
             ->latest()
             ->when(! $request->boolean('all_clients'), fn ($query) => $query->limit(50))
-            ->get(['id', 'name', 'email', 'phone', 'avatar_path', 'access_status', 'group_name', 'tags', 'access_ends_at', 'created_at']);
+            ->get($clientColumns);
+
+        if ($canSeeStaffStatus) $clients->each->makeVisible('staff_status');
 
         $progressByUser = \App\Models\LessonProgress::query()
             ->selectRaw('user_id, ROUND(AVG(progress_percent)) as progress_percent')
@@ -127,16 +132,33 @@ class AdminDashboardController extends Controller
         abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
         $this->assertCanAccessClient($request, $user);
 
+        if ($request->has('staff_status')) {
+            abort_unless(in_array($request->user()->role->value, ['admin', 'curator'], true), 403, 'Статус участницы может менять только администратор или куратор.');
+        }
+
         $user->update($request->validate([
             'access_status' => ['nullable', 'in:free,paid'],
             'group_name' => ['nullable', 'string', 'max:255'],
             'tags' => ['nullable', 'array'],
+            'staff_status' => ['nullable', 'in:newcomer,vip,start_2,start_15,needs_support,dropped_out,no_feedback'],
             'access_ends_at' => ['nullable', 'date'],
             'blocked_at' => ['nullable', 'date'],
             'archived_at' => ['nullable', 'date'],
         ]));
 
-        return response()->json(['data' => $user]);
+        return response()->json(['data' => $user->makeVisible('staff_status')]);
+    }
+
+    public function destroyUser(Request $request, User $user)
+    {
+        abort_unless(in_array($request->user()->role->value, ['admin', 'curator'], true), 403);
+        abort_unless($user->role->value === 'client', 404);
+        abort_if($user->is($request->user()), 422, 'Нельзя удалить собственный аккаунт.');
+
+        $user->tokens()->delete();
+        $user->delete();
+
+        return response()->noContent();
     }
 
     public function sendNotification(Request $request)

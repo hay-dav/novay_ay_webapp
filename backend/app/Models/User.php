@@ -24,6 +24,7 @@ class User extends Authenticatable
         'phone',
         'avatar_path',
         'access_status',
+        'staff_status',
         'group_name',
         'tags',
         'access_ends_at',
@@ -40,6 +41,8 @@ class User extends Authenticatable
         'remember_token',
         'email_hash',
         'phone_hash',
+        // Operational labels are intentionally visible only in staff APIs.
+        'staff_status',
     ];
 
     protected function casts(): array

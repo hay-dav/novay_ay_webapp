@@ -1,0 +1,27 @@
+User-agent: *
+Allow: /
+
+# Личный кабинет, служебные разделы и API не предназначены для поисковой выдачи.
+Disallow: /app
+Disallow: /catalog
+Disallow: /courses/
+Disallow: /progress
+Disallow: /tariffs
+Disallow: /nutrition
+Disallow: /workouts
+Disallow: /expert-lives
+Disallow: /lessons
+Disallow: /recipes
+Disallow: /knowledge-base
+Disallow: /podcasts
+Disallow: /chat
+Disallow: /participants
+Disallow: /access-management
+Disallow: /trainer
+Disallow: /admin
+Disallow: /login
+Disallow: /live/
+Disallow: /api/
+Disallow: /privacy-policy
+
+Sitemap: https://lazareva-secret.ru/sitemap.xml

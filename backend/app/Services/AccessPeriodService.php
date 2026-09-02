@@ -87,7 +87,7 @@ class AccessPeriodService
             ->update(['status' => 'cancelled']);
 
         $endsOn = $startsOn->copy()->addMonthsNoOverflow($months);
-        $status = $startsOn->isSameDay(now()) ? 'active' : 'scheduled';
+        $status = $startsOn->isAfter(now()->startOfDay()) ? 'scheduled' : 'active';
         $period = AccessPeriod::query()->create([
             'user_id' => $user->id,
             'granted_by' => $grantedBy->id,

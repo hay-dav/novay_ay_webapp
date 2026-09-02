@@ -2,8 +2,10 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '@/services/api';
+import { useAuthStore } from '@/stores/auth';
 const backendOrigin = api.defaults.baseURL.replace(/\/api\/v1\/?$/, '');
 const route = useRoute();
+const auth = useAuthStore();
 const participants = ref([]);
 const participantsCount = ref(0);
 const searchQuery = ref('');
@@ -26,6 +28,21 @@ const filterOptions = [
     { value: 'new', label: 'Новые' },
 ];
 const newParticipantThreshold = Date.now() - 7 * 86400000;
+const staffStatuses = [
+    { value: 'newcomer', label: 'Новенькая' },
+    { value: 'vip', label: 'ВИП' },
+    { value: 'start_2', label: 'Старт 2 число' },
+    { value: 'start_15', label: 'Старт 15 число' },
+    { value: 'needs_support', label: 'Нужна поддержка' },
+    { value: 'dropped_out', label: 'Выбыла' },
+];
+const canViewStaffStatus = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
+const canManageStaffStatus = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
+const canDeleteAccounts = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
+const deletingParticipantId = ref(null);
+function staffStatusLabel(value) {
+    return staffStatuses.find((status) => status.value === value)?.label ?? '';
+}
 const filteredParticipants = computed(() => {
     const query = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
     return participants.value.filter((participant) => {
@@ -37,6 +54,7 @@ const filteredParticipants = computed(() => {
             participant.first_name,
             participant.last_name,
             participant.name,
+            canViewStaffStatus.value ? staffStatusLabel(participant.staff_status) : '',
         ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU').includes(query);
         return matchesFilter && matchesSearch;
     });
@@ -67,6 +85,29 @@ async function load() {
 async function setAccess(participant, access_status) {
     const { data } = await api.patch(`/admin/users/${participant.id}`, { access_status });
     Object.assign(participant, data.data);
+}
+async function setStaffStatus(participant, staff_status) {
+    const { data } = await api.patch(`/admin/users/${participant.id}`, { staff_status: staff_status || null });
+    Object.assign(participant, data.data);
+}
+async function deleteParticipant(participant) {
+    if (!window.confirm(`Удалить аккаунт «${participant.name}»? Это действие нельзя отменить.`))
+        return;
+
+    deletingParticipantId.value = participant.id;
+    try {
+        await api.delete(`/admin/users/${participant.id}`);
+        participants.value = participants.value.filter((item) => item.id !== participant.id);
+        participantsCount.value = Math.max(0, participantsCount.value - 1);
+        if (selectedParticipant.value?.id === participant.id)
+            closeDetails();
+    }
+    catch (error) {
+        window.alert(error.response?.data?.message ?? 'Не удалось удалить аккаунт.');
+    }
+    finally {
+        deletingParticipantId.value = null;
+    }
 }
 async function openDetails(participant) {
     selectedParticipant.value = participant;
@@ -119,6 +160,13 @@ function avatarUrl(path) {
 onMounted(load);
 </script>
 
+<style scoped>
+select option {
+  background: #211e25;
+  color: #e7e0e9;
+}
+</style>
+
 <template>
   <section class="grid min-w-0 gap-6 overflow-x-hidden">
     <div class="flex flex-wrap items-end justify-between gap-3">
@@ -133,7 +181,7 @@ onMounted(load);
       <label class="relative block min-w-0 max-w-xl">
         <span class="sr-only">Поиск участниц</span>
         <span class="material-symbols-outlined pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-on-muted">search</span>
-        <input v-model="searchQuery" class="w-full rounded-2xl border border-white/10 bg-surface-container py-3 pl-12 pr-4 text-on-surface outline-none transition placeholder:text-on-muted focus:border-primary/50" type="search" placeholder="Поиск по имени или фамилии" />
+        <input v-model="searchQuery" class="w-full rounded-2xl border border-white/10 bg-surface-container py-3 pl-12 pr-4 text-on-surface outline-none transition placeholder:text-on-muted focus:border-primary/50" type="search" :placeholder="canViewStaffStatus ? 'Поиск по имени, фамилии или статусу' : 'Поиск по имени или фамилии'" />
       </label>
       <div class="flex min-w-0 flex-wrap gap-2" role="group" aria-label="Фильтр участниц">
         <button
@@ -201,6 +249,20 @@ onMounted(load);
           <button class="min-w-0 rounded-xl px-4 py-2 text-sm font-extrabold whitespace-normal" :class="participant.access_status === 'paid' ? 'bg-primary text-[#470382]' : 'border border-white/10 text-on-muted'" @click="setAccess(participant, 'paid')">Доступ открыт</button>
           <button class="min-w-0 rounded-xl px-4 py-2 text-sm font-extrabold whitespace-normal" :class="participant.access_status === 'free' ? 'bg-primary text-[#470382]' : 'border border-white/10 text-on-muted'" @click="setAccess(participant, 'free')">Ограничить</button>
         </div>
+
+        <div v-if="canViewStaffStatus" class="mt-3 rounded-2xl border border-primary/15 bg-primary/5 p-3">
+          <span class="block text-xs font-bold uppercase text-primary">Статус участницы</span>
+          <select v-if="canManageStaffStatus" class="mt-2 w-full rounded-xl border border-primary/40 bg-primary-container px-3 py-2.5 text-sm font-extrabold text-white outline-none focus:border-primary focus:ring-2 focus:ring-primary/35" :value="participant.staff_status ?? ''" @change="setStaffStatus(participant, $event.target.value)">
+            <option value="">Без статуса</option>
+            <option v-for="status in staffStatuses" :key="status.value" :value="status.value">{{ status.label }}</option>
+          </select>
+          <strong v-else class="mt-1 block text-sm text-primary">{{ staffStatusLabel(participant.staff_status) || 'Без статуса' }}</strong>
+        </div>
+
+        <button v-if="canDeleteAccounts" class="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/30 px-4 py-3 text-sm font-extrabold text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50" type="button" :disabled="deletingParticipantId === participant.id" @click="deleteParticipant(participant)">
+          <span class="material-symbols-outlined text-[20px]">delete</span>
+          {{ deletingParticipantId === participant.id ? 'Удаление...' : 'Удалить аккаунт' }}
+        </button>
       </article>
       <p v-if="!filteredParticipants.length" class="glass-panel rounded-[28px] p-5 text-sm text-on-muted md:col-span-2 xl:col-span-3">По вашему запросу участниц не найдено.</p>
     </div>
@@ -242,21 +304,6 @@ onMounted(load);
                   </div>
                 </section>
                 <p v-if="!groupedFoodEntries.length" class="rounded-xl bg-surface-container p-4 text-sm text-on-muted">За выбранный период записей нет.</p>
-              </div>
-            </div>
-
-            <div>
-              <h4 class="mb-4 text-xl font-extrabold">Комментарии клиенту</h4>
-              <form class="mb-4 grid gap-3" @submit.prevent="addComment">
-                <textarea v-model.trim="commentBody" required class="min-h-28 rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" placeholder="Напишите рекомендации или комментарий к отчету" />
-                <button class="rounded-xl bg-primary px-5 py-3 text-sm font-extrabold text-[#470382] disabled:opacity-50" type="submit" :disabled="commentSaving">{{ commentSaving ? 'Отправка...' : 'Отправить клиенту' }}</button>
-              </form>
-              <div class="grid max-h-[420px] gap-3 overflow-y-auto pr-1">
-                <article v-for="comment in details.comments" :key="comment.id" class="rounded-2xl border border-white/10 bg-surface-container p-4">
-                  <div class="flex items-center justify-between gap-3 text-xs"><strong class="text-primary">{{ comment.author?.name }}</strong><span class="text-on-muted">{{ formatDate(comment.created_at) }}</span></div>
-                  <p class="mt-2 text-sm leading-6 text-on-surface">{{ comment.body }}</p>
-                </article>
-                <p v-if="!details.comments.length" class="rounded-xl bg-surface-container p-4 text-sm text-on-muted">Комментариев пока нет.</p>
               </div>
             </div>
 

@@ -30,4 +30,5 @@ class Course extends Model
     {
         return $this->hasMany(CourseModule::class)->orderBy('sort_order');
     }
+
 }

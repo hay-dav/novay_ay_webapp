@@ -3,9 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\ClientProfile;
+use App\Models\Notification;
 use App\Models\User;
 use App\Notifications\ResetPasswordLinkNotification;
-use App\Services\MediaOptimizer;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -49,11 +49,22 @@ class AuthController extends Controller
         );
         $validated['role'] = 'client';
         $validated['access_status'] = 'free';
+        $validated['staff_status'] = 'newcomer';
         $validated['privacy_policy_accepted_at'] = now();
         $validated['privacy_policy_version'] = '2026-07-26';
 
         $user = User::query()->create($validated);
         ClientProfile::query()->create(['user_id' => $user->id, 'goal' => $goal]);
+
+        User::query()->whereIn('role', ['admin', 'curator'])->eachById(function (User $staff) use ($user): void {
+            Notification::query()->create([
+                'user_id' => $staff->id,
+                'type' => 'registration',
+                'title' => 'Новая регистрация',
+                'body' => "Зарегистрировалась новая участница: {$user->name}.",
+                'data' => ['link_url' => '/participants', 'registered_user_id' => $user->id],
+            ]);
+        });
 
         return response()->json([
             'user' => $this->present($user),
@@ -154,17 +165,16 @@ class AuthController extends Controller
         return response()->json(['message' => 'Пароль изменён. Теперь вы можете войти в кабинет.']);
     }
 
-    public function updateAvatar(Request $request, MediaStorage $media, MediaOptimizer $optimizer)
+    public function updateAvatar(Request $request, MediaStorage $media)
     {
         $validated = $request->validate([
             'avatar' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,heic,heif', 'max:20480'],
         ]);
 
         $user = $request->user();
-        $sourcePath = $media->store($validated['avatar'], 'avatars');
-        $avatarPath = $optimizer->optimize($sourcePath, 'image');
-        if (! $avatarPath) {
-            $media->delete($sourcePath);
+        try {
+            $avatarPath = $media->storeOptimized($validated['avatar'], 'avatars', 'image');
+        } catch (\RuntimeException) {
             throw ValidationException::withMessages([
                 'avatar' => 'Не удалось обработать изображение. Выберите другое фото и повторите попытку.',
             ]);
@@ -173,7 +183,6 @@ class AuthController extends Controller
         $previousPath = $user->avatar_path;
         $user->update(['avatar_path' => $avatarPath]);
         $media->delete($previousPath);
-        $media->delete($sourcePath);
 
         return response()->json(['data' => $this->present($user->fresh()->load('clientProfile'))]);
     }
@@ -209,6 +218,8 @@ class AuthController extends Controller
 
     private function present(User $user): User
     {
+        $user->makeVisible('staff_status');
+
         if ($user->avatar_path) {
             $user->setAttribute('avatar_path', app(MediaStorage::class)->secureCdnUrl($user->avatar_path, 3600));
         }

@@ -48,7 +48,49 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: php artisan queue:work --tries=3 --timeout=90
+    command: php artisan queue:work --queue=broadcasts,default --tries=3 --timeout=90
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - novaya-ya
+
+  live-queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: php artisan queue:work --queue=live --tries=5 --timeout=60
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - novaya-ya
+
+  notification-queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: php artisan queue:work --queue=notifications --tries=3 --timeout=100
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - novaya-ya
+
+  media:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: php artisan queue:work --queue=media --tries=2 --timeout=1800
     working_dir: /var/www/html
     volumes:
       - ./backend:/var/www/html

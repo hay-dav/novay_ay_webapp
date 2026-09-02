@@ -2,9 +2,11 @@
 import { computed, onMounted, ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/services/api';
+import ContentLoadingState from '@/components/ContentLoadingState.vue';
 
 const auth = useAuthStore();
 const podcasts = ref([]);
+const podcastsLoading = ref(true);
 const searchQuery = ref('');
 const showCreateModal = ref(false);
 const saving = ref(false);
@@ -22,8 +24,14 @@ const filteredPodcasts = computed(() => {
 });
 
 async function load() {
-    const { data } = await api.get('/podcasts');
-    podcasts.value = data.data;
+    podcastsLoading.value = true;
+    try {
+        const { data } = await api.get('/podcasts');
+        podcasts.value = data.data;
+    }
+    finally {
+        podcastsLoading.value = false;
+    }
 }
 function selectCover(event) {
     const [cover] = event.target.files ?? [];
@@ -101,11 +109,12 @@ onMounted(load);
       <button v-if="searchQuery" class="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-xl text-on-muted transition hover:bg-white/5 hover:text-on-surface" type="button" aria-label="Очистить поиск" @click="searchQuery = ''"><span class="material-symbols-outlined text-[19px]">close</span></button>
     </label>
 
-    <div v-if="filteredPodcasts.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+    <ContentLoadingState v-if="podcastsLoading" label="Загружаем подкасты…" />
+    <div v-else-if="filteredPodcasts.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
       <article v-for="podcast in filteredPodcasts" :key="podcast.id" class="glass-panel overflow-hidden rounded-[28px]">
         <img v-if="podcast.cover_path" class="aspect-video w-full object-cover" :src="podcast.cover_path" :alt="podcast.title" />
         <div v-else class="grid aspect-video place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-6xl">headphones</span></div>
-        <div class="p-5"><div class="flex items-center justify-between gap-3"><span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">{{ podcast.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}</span><span class="material-symbols-outlined text-primary">graphic_eq</span></div><h3 class="mt-4 text-xl font-extrabold">{{ podcast.title }}</h3><p class="mt-2 text-sm leading-6 text-on-muted">{{ podcast.description }}</p><audio class="mt-5 w-full" :src="podcast.audio_url" controls controlsList="nodownload noplaybackrate" /><button v-if="canManagePodcasts" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 px-4 py-3 text-sm font-extrabold text-red-200 hover:bg-red-500/10" type="button" @click="deletePodcast(podcast)"><span class="material-symbols-outlined text-[20px]">delete</span>Удалить подкаст</button></div>
+        <div class="p-5"><div class="flex items-center justify-between gap-3"><span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">{{ podcast.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}</span><span class="material-symbols-outlined text-primary">graphic_eq</span></div><h3 class="mt-4 text-xl font-extrabold">{{ podcast.title }}</h3><p class="mt-2 text-sm leading-6 text-on-muted">{{ podcast.description }}</p><audio class="mt-5 w-full" :src="podcast.audio_url" controls preload="none" controlsList="nodownload noplaybackrate" /><button v-if="canManagePodcasts" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 px-4 py-3 text-sm font-extrabold text-red-200 hover:bg-red-500/10" type="button" @click="deletePodcast(podcast)"><span class="material-symbols-outlined text-[20px]">delete</span>Удалить подкаст</button></div>
       </article>
     </div>
     <div v-else-if="podcasts.length && searchQuery.trim()" class="glass-panel grid min-h-52 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">search_off</span><h3 class="mt-3 text-xl font-extrabold">Подкасты не найдены</h3><p class="mt-2 text-sm text-on-muted">Попробуйте изменить запрос или очистить поиск.</p></div></div>

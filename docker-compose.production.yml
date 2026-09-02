@@ -4,7 +4,6 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
       API_DOMAIN: ${API_DOMAIN}
@@ -18,6 +17,20 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
+      livekit:
+        condition: service_started
+    networks: [app]
+
+  haproxy:
+    image: haproxy:3.1-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - ./infra/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      gateway:
+        condition: service_started
       livekit:
         condition: service_started
     networks: [app]
@@ -39,6 +52,10 @@ services:
       dockerfile: Dockerfile.prod
     restart: unless-stopped
     env_file: ./backend/.env.production
+    volumes:
+      # Egress writes the original recording here; the media worker reads it
+      # locally, transcodes it, then uploads only the finished file to S3.
+      - ./backend/storage/app/live-egress:/var/www/html/storage/app/live-egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,6 +71,18 @@ services:
   queue:
     <<: *backend
     command: php artisan queue:work --queue=broadcasts,default --sleep=1 --tries=3 --timeout=600 --max-time=3600
+    healthcheck:
+      disable: true
+
+  live-queue:
+    <<: *backend
+    command: php artisan queue:work --queue=live --sleep=1 --tries=5 --timeout=60 --max-time=3600
+    healthcheck:
+      disable: true
+
+  notification-queue:
+    <<: *backend
+    command: php artisan queue:work --queue=notifications --sleep=1 --tries=3 --timeout=100 --max-time=3600
     healthcheck:
       disable: true
 
@@ -96,14 +125,17 @@ services:
         condition: service_healthy
     ports:
       - "7881:7881"
+      - "3478:3478/udp"
       - "50000-50100:50000-50100/udp"
     volumes:
       - ./infra/livekit/livekit.production.yaml:/etc/livekit.yaml:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     networks: [app]
 
   # Browser recording is unreliable on iOS when the tab is backgrounded.
   # Egress subscribes to the LiveKit room on the server and writes the
-  # composite recording directly to the private S3 bucket.
+  # composite recording to the local shared volume. The media worker uploads
+  # the optimized final file to the private S3 bucket after the live ends.
   egress:
     image: livekit/egress:v1.13
     restart: unless-stopped
@@ -125,6 +157,8 @@ services:
           file_output_max_duration: 4h
     cap_add:
       - SYS_ADMIN
+    volumes:
+      - ./backend/storage/app/live-egress:/out
     # RoomComposite requires four CPU credits in Egress v1.13. This is a
     # runtime ceiling rather than a reservation; only one recording is active.
     cpus: 4.0

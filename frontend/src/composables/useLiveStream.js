@@ -27,6 +27,7 @@ export function useLiveStream(options = {}) {
     const playbackMuted = ref(true);
     const microphoneEnabled = ref(false);
     const cameraEnabled = ref(false);
+    const hostCameraEnabled = ref(false);
     const recordingSaving = ref(false);
     const cameraFacingMode = ref('user');
     const cameraSwitching = ref(false);
@@ -47,25 +48,6 @@ export function useLiveStream(options = {}) {
 
     const remoteAudioElements = new Set();
     const participantVideoElements = new Map();
-    let mediaRecorder = null;
-    let recordingStream = null;
-    let recordingStreamId = null;
-    let recordingMimeType = '';
-    let recordingSegmentTimer = null;
-    let recordingSegmentIndex = 0;
-    let recordingSegmentDone = Promise.resolve();
-    let recordingSegmentUploads = [];
-    let recordingFinalizing = false;
-    let recordingStartedAt = 0;
-    let recordingCanvas = null;
-    let recordingContext = null;
-    let recordingPreview = null;
-    let recordingWatermarkImage = null;
-    let recordingCanvasTrack = null;
-    let recordingFrameId = null;
-    let recordingAudioContext = null;
-    let recordingAudioDestination = null;
-    const recordingAudioSources = new Map();
     let activeTimer;
     let hostSession = false;
     let viewerReconnectInProgress = false;
@@ -104,21 +86,33 @@ export function useLiveStream(options = {}) {
     function createRoom() {
         const room = new Room(roomOptions);
         room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+            if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera && isHostParticipant(participant))
+                hostCameraEnabled.value = true;
             attachRemoteTrack(track, participant);
             updateViewerCount();
         });
         room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+            if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera && isHostParticipant(participant))
+                hostCameraEnabled.value = false;
             detachRemoteTrack(track, participant);
             updateViewerCount();
         });
         room.on(RoomEvent.TrackMuted, (publication, participant) => {
-            if (publication.source === Track.Source.Camera && participant && !isHostParticipant(participant))
-                removeConferenceParticipant(participant.identity, publication.track);
+            if (publication.source === Track.Source.Camera && participant) {
+                if (isHostParticipant(participant))
+                    hostCameraEnabled.value = false;
+                else
+                    removeConferenceParticipant(participant.identity, publication.track);
+            }
             updateViewerCount();
         });
         room.on(RoomEvent.TrackUnmuted, (publication, participant) => {
-            if (publication.source === Track.Source.Camera && publication.track && participant && !isHostParticipant(participant))
-                attachRemoteTrack(publication.track, participant);
+            if (publication.source === Track.Source.Camera && publication.track && participant) {
+                if (isHostParticipant(participant))
+                    hostCameraEnabled.value = true;
+                else
+                    attachRemoteTrack(publication.track, participant);
+            }
             updateViewerCount();
         });
         room.on(RoomEvent.TrackPublished, updateViewerCount);
@@ -168,8 +162,6 @@ export function useLiveStream(options = {}) {
         liveError.value = '';
         hostSession = true;
         try {
-            if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
-                throw new DOMException('Media devices unavailable', 'SecurityError');
             const { data } = await api.post('/live-streams/start', { ...recordingDetails, section });
             activeStream.value = data.data;
             if (recordingDetails.title && data.data?.recording_title !== recordingDetails.title)
@@ -332,6 +324,7 @@ export function useLiveStream(options = {}) {
     function attachRemoteTrack(track, participant) {
         if (track.kind === Track.Kind.Video) {
             if (isHostParticipant(participant)) {
+                hostCameraEnabled.value = true;
                 nextTick(attachHostVideo);
             } else {
                 const entry = { identity: participant.identity, name: participant.name || 'Участник', track: markRaw(track) };
@@ -346,7 +339,6 @@ export function useLiveStream(options = {}) {
             return;
         }
         if (track.kind === Track.Kind.Audio) {
-            addRemoteAudioToRecording(track);
             const element = track.attach();
             element.autoplay = true;
             element.style.display = 'none';
@@ -436,9 +428,12 @@ export function useLiveStream(options = {}) {
     }
 
     function detachRemoteTrack(track, participant) {
-        removeRemoteAudioFromRecording(track);
-        if (track.kind === Track.Kind.Video && participant && !isHostParticipant(participant))
-            removeConferenceParticipant(participant.identity);
+        if (track.kind === Track.Kind.Video && participant) {
+            if (isHostParticipant(participant))
+                hostCameraEnabled.value = false;
+            else
+                removeConferenceParticipant(participant.identity);
+        }
         track.detach().forEach((element) => {
             remoteAudioElements.delete(element);
             element.srcObject = null;
@@ -534,7 +529,6 @@ export function useLiveStream(options = {}) {
                 frameRate: { ideal: 30, max: 30 },
             });
             cameraFacingMode.value = cameraTrack.mediaStreamTrack.getSettings().facingMode ?? nextFacingMode;
-            updateRecordingVideoSource(cameraTrack.mediaStreamTrack);
             attachLocalCamera();
         }
         catch {
@@ -602,285 +596,6 @@ export function useLiveStream(options = {}) {
         }
     }
 
-    function recordingTrackKey(track) {
-        return track?.sid ?? track?.mediaStreamTrack?.id;
-    }
-
-    function addAudioTrackToRecordingMix(mediaStreamTrack, key) {
-        if (!recordingAudioContext || !recordingAudioDestination || !mediaStreamTrack || !key || recordingAudioSources.has(key))
-            return;
-        const source = recordingAudioContext.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
-        source.connect(recordingAudioDestination);
-        recordingAudioSources.set(key, source);
-    }
-
-    function addRemoteAudioToRecording(track) {
-        if (!hostSession)
-            return;
-        addAudioTrackToRecordingMix(track.mediaStreamTrack, recordingTrackKey(track));
-    }
-
-    function removeRemoteAudioFromRecording(track) {
-        const key = recordingTrackKey(track);
-        const source = key ? recordingAudioSources.get(key) : null;
-        source?.disconnect();
-        if (key)
-            recordingAudioSources.delete(key);
-    }
-
-    function addExistingRemoteAudioToRecording() {
-        liveKitRoom.value?.remoteParticipants.forEach((participant) => {
-            participant.trackPublications.forEach((publication) => {
-                if (publication.track?.kind === Track.Kind.Audio)
-                    addRemoteAudioToRecording(publication.track);
-            });
-        });
-    }
-
-    async function startRecording() {
-        const participant = liveKitRoom.value?.localParticipant;
-        if (!participant)
-            return;
-        const cameraTrack = participant.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
-        const microphoneTrack = participant.getTrackPublication(Track.Source.Microphone)?.audioTrack?.mediaStreamTrack;
-        if (!cameraTrack)
-            throw new Error('Камера недоступна для записи эфира.');
-
-        recordingCanvas = document.createElement('canvas');
-        // Record every live stream in a stable horizontal 16:9 frame,
-        // independently of the camera orientation reported by mobile browsers.
-        recordingCanvas.width = 1280;
-        recordingCanvas.height = 720;
-        recordingContext = recordingCanvas.getContext('2d', { alpha: false });
-        if (!recordingContext || typeof recordingCanvas.captureStream !== 'function')
-            throw new Error('Браузер не поддерживает непрерывную запись при смене камеры.');
-
-        recordingPreview = document.createElement('video');
-        recordingPreview.autoplay = true;
-        recordingPreview.muted = true;
-        recordingPreview.playsInline = true;
-        updateRecordingVideoSource(cameraTrack);
-        await recordingPreview.play().catch(() => undefined);
-        recordingWatermarkImage = new Image();
-        recordingWatermarkImage.src = '/public-image/novaya-ya-logo-header.png';
-        if (typeof recordingWatermarkImage.decode === 'function')
-            await recordingWatermarkImage.decode().catch(() => undefined);
-
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        recordingAudioContext = AudioContextClass ? new AudioContextClass() : null;
-        recordingAudioDestination = recordingAudioContext?.createMediaStreamDestination() ?? null;
-        if (recordingAudioContext?.state === 'suspended')
-            await recordingAudioContext.resume().catch(() => undefined);
-        addAudioTrackToRecordingMix(microphoneTrack, 'host-microphone');
-        addExistingRemoteAudioToRecording();
-
-        const canvasStream = recordingCanvas.captureStream(30);
-        recordingCanvasTrack = canvasStream.getVideoTracks()[0] ?? null;
-        recordingStream = new MediaStream([
-            recordingCanvasTrack,
-            ...(recordingAudioDestination?.stream.getAudioTracks() ?? [microphoneTrack].filter(Boolean)),
-        ].filter(Boolean));
-        const appleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent);
-        const mimeTypes = appleMobile
-            ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
-            : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4'];
-        recordingMimeType = mimeTypes
-            .find((type) => MediaRecorder.isTypeSupported(type));
-        recordingSegmentIndex = 0;
-        recordingSegmentUploads = [];
-        recordingFinalizing = false;
-        recordingStreamId = activeStream.value?.id ?? null;
-        recordingStartedAt = Date.now();
-        startRecordingSegment();
-        drawRecordingFrame();
-    }
-
-    function startRecordingSegment() {
-        if (recordingFinalizing || !recordingStream)
-            return;
-
-        const chunks = [];
-        const recorder = new MediaRecorder(recordingStream, {
-            ...(recordingMimeType ? { mimeType: recordingMimeType } : {}),
-            videoBitsPerSecond: 2_500_000,
-            audioBitsPerSecond: 96_000,
-        });
-        mediaRecorder = recorder;
-        recordingSegmentDone = new Promise((resolve) => {
-            let segmentFinished = false;
-            const finishSegment = () => {
-                if (segmentFinished)
-                    return;
-                segmentFinished = true;
-                window.clearTimeout(recordingSegmentTimer);
-                const blob = new Blob(chunks, { type: recorder.mimeType || recordingMimeType || 'video/webm' });
-                if (blob.size) {
-                    const sequence = recordingSegmentIndex;
-                    recordingSegmentIndex += 1;
-                    recordingSegmentUploads.push(uploadRecordingSegment(blob, sequence));
-                }
-                resolve();
-                if (!recordingFinalizing)
-                    startRecordingSegment();
-            };
-            recorder.ondataavailable = (event) => {
-                if (event.data.size)
-                    chunks.push(event.data);
-            };
-            recorder.onstop = finishSegment;
-            recorder.onerror = (event) => {
-                liveError.value = `Ошибка записи фрагмента эфира: ${event.error?.message ?? 'рекордер перезапущен'}`;
-                if (recorder.state !== 'inactive') {
-                    try {
-                        recorder.requestData();
-                        recorder.stop();
-                    }
-                    catch {
-                        finishSegment();
-                    }
-                }
-                else {
-                    window.setTimeout(finishSegment, 250);
-                }
-            };
-        });
-        recorder.start(1000);
-        recordingSegmentTimer = window.setTimeout(() => {
-            if (recorder.state === 'recording') {
-                recorder.requestData();
-                recorder.stop();
-            }
-        }, 45_000);
-    }
-
-    function updateRecordingVideoSource(track) {
-        if (!recordingPreview || !track)
-            return;
-        recordingPreview.srcObject = new MediaStream([track]);
-        recordingPreview.play().catch(() => undefined);
-    }
-
-    function drawRecordingFrame() {
-        if (!recordingCanvas || !recordingContext || !recordingPreview)
-            return;
-        recordingContext.fillStyle = '#000';
-        recordingContext.fillRect(0, 0, recordingCanvas.width, recordingCanvas.height);
-        if (recordingPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-            const sourceWidth = recordingPreview.videoWidth || recordingCanvas.width;
-            const sourceHeight = recordingPreview.videoHeight || recordingCanvas.height;
-            const scale = Math.min(
-                recordingCanvas.width / sourceWidth,
-                recordingCanvas.height / sourceHeight,
-            );
-            const width = sourceWidth * scale;
-            const height = sourceHeight * scale;
-            recordingContext.drawImage(
-                recordingPreview,
-                (recordingCanvas.width - width) / 2,
-                (recordingCanvas.height - height) / 2,
-                width,
-                height,
-            );
-        }
-        drawRecordingWatermark();
-        recordingFrameId = window.requestAnimationFrame(drawRecordingFrame);
-    }
-
-    function drawRecordingWatermark() {
-        if (!recordingContext || !recordingCanvas)
-            return;
-
-        const width = 250;
-        const height = 132;
-        const margin = 28;
-        const x = recordingCanvas.width - width - margin;
-        const y = recordingCanvas.height - height - margin;
-        recordingContext.save();
-        recordingContext.globalAlpha = 0.68;
-        recordingContext.fillStyle = '#fff';
-        recordingContext.fillRect(x - 10, y - 8, width + 20, height + 16);
-        if (recordingWatermarkImage?.complete && recordingWatermarkImage.naturalWidth) {
-            recordingContext.drawImage(recordingWatermarkImage, x, y, width, height);
-        }
-        else {
-            recordingContext.fillStyle = '#572369';
-            recordingContext.font = '700 18px sans-serif';
-            recordingContext.textAlign = 'center';
-            recordingContext.textBaseline = 'middle';
-            recordingContext.fillText('НОВАЯ Я · Курс Лазаревой', x + width / 2, y + height / 2);
-        }
-        recordingContext.restore();
-    }
-
-    function disposeRecordingPipeline() {
-        if (recordingFrameId !== null) {
-            window.cancelAnimationFrame(recordingFrameId);
-            recordingFrameId = null;
-        }
-        recordingCanvasTrack?.stop();
-        recordingCanvasTrack = null;
-        if (recordingPreview) {
-            recordingPreview.pause();
-            recordingPreview.srcObject = null;
-        }
-        recordingPreview = null;
-        recordingWatermarkImage = null;
-        recordingAudioSources.forEach((source) => source.disconnect());
-        recordingAudioSources.clear();
-        recordingAudioDestination = null;
-        recordingAudioContext?.close().catch(() => undefined);
-        recordingAudioContext = null;
-        recordingContext = null;
-        recordingCanvas = null;
-    }
-
-    async function uploadRecordingSegment(recording, sequence) {
-        const form = new FormData();
-        const extension = recording.type.includes('mp4') ? 'mp4' : 'webm';
-        form.append('segment', recording, `segment-${String(sequence).padStart(6, '0')}.${extension}`);
-        form.append('sequence', String(sequence));
-
-        let lastError;
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-            try {
-                await api.post(`/live-streams/${recordingStreamId}/recording-segments`, form);
-                return;
-            }
-            catch (error) {
-                lastError = error;
-                if (error.response?.status >= 400 && error.response?.status < 500)
-                    throw error;
-                await new Promise((resolve) => window.setTimeout(resolve, 1000 * (attempt + 1)));
-            }
-        }
-        throw lastError;
-    }
-
-    async function stopRecordingAndFinalize(stream, durationSeconds) {
-        recordingFinalizing = true;
-        window.clearTimeout(recordingSegmentTimer);
-        const recorder = mediaRecorder;
-        if (recorder?.state === 'recording') {
-            recorder.requestData();
-            recorder.stop();
-        }
-        await recordingSegmentDone;
-        mediaRecorder = null;
-        await Promise.all(recordingSegmentUploads);
-        if (recordingSegmentIndex === 0)
-            throw new Error('Запись не содержит ни одного фрагмента.');
-
-        const { data } = await api.post(`/live-streams/${stream.id}/recording/finalize`, {
-            segment_count: recordingSegmentIndex,
-            duration_seconds: durationSeconds,
-        });
-        recordingStream = null;
-        recordingSegmentUploads = [];
-        disposeRecordingPipeline();
-
-        return data.data;
-    }
-
     async function stopBroadcast() {
         const stream = activeStream.value;
         if (!stream)
@@ -901,13 +616,6 @@ export function useLiveStream(options = {}) {
             hostSession = false;
             activeStream.value = null;
             closeLiveModal();
-            recordingFinalizing = true;
-            window.clearTimeout(recordingSegmentTimer);
-            if (mediaRecorder?.state === 'recording')
-                mediaRecorder.stop();
-            recordingStream = null;
-            recordingStreamId = null;
-            disposeRecordingPipeline();
             recordingSaving.value = false;
         }
     }
@@ -930,6 +638,7 @@ export function useLiveStream(options = {}) {
         connectionState.value = 'idle';
         microphoneEnabled.value = false;
         cameraEnabled.value = false;
+        hostCameraEnabled.value = false;
     }
 
     function closeLiveModal() {
@@ -942,12 +651,6 @@ export function useLiveStream(options = {}) {
         window.clearInterval(activeTimer);
         if (activeStream.value && hostSession)
             api.patch(`/live-streams/${activeStream.value.id}/end`).catch(() => undefined);
-        recordingFinalizing = true;
-        window.clearTimeout(recordingSegmentTimer);
-        if (mediaRecorder?.state === 'recording')
-            mediaRecorder.stop();
-        recordingStream = null;
-        disposeRecordingPipeline();
         disconnectRoom();
     });
 
@@ -962,6 +665,7 @@ export function useLiveStream(options = {}) {
         playbackMuted,
         microphoneEnabled,
         cameraEnabled,
+        hostCameraEnabled,
         recordingSaving,
         cameraFacingMode,
         cameraSwitching,

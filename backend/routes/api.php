@@ -103,6 +103,7 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/chat/messages', [ChatController::class, 'index']);
         Route::post('/chat/messages', [ChatController::class, 'store']);
         Route::patch('/chat/messages/{chatMessage}', [ChatController::class, 'update']);
+        Route::delete('/chat/messages/{chatMessage}', [ChatController::class, 'destroy']);
         Route::post('/chat/messages/{chatMessage}/reactions', [ChatController::class, 'toggleReaction']);
         Route::get('/chat/mentionables', [ChatController::class, 'mentionables']);
         Route::get('/chat/notification-preferences', [ChatController::class, 'notificationPreferences']);
@@ -124,6 +125,7 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/trainer/clients/{client}/nutrition-plans', [NutritionPlanController::class, 'storeForClient']);
         Route::get('/admin/dashboard', [AdminDashboardController::class, 'index']);
         Route::patch('/admin/users/{user}', [AdminDashboardController::class, 'updateUser']);
+        Route::delete('/admin/users/{user}', [AdminDashboardController::class, 'destroyUser']);
         Route::get('/admin/users/{user}/details', [AdminDashboardController::class, 'clientDetails']);
         Route::post('/admin/users/{user}/comments', [AdminDashboardController::class, 'storeClientComment']);
         Route::post('/admin/notifications', [AdminDashboardController::class, 'sendNotification']);

@@ -19,7 +19,7 @@ class LiveKitEgressService
             'departure_timeout' => 20,
         ], ['roomCreate' => true]);
 
-        if (! $response->successful()) {
+        if (! $response->successful() && ! $this->roomExists($roomName)) {
             throw new RuntimeException('LiveKit could not create the room: '.$response->body());
         }
     }
@@ -27,13 +27,7 @@ class LiveKitEgressService
     /** @return array{id: string, path: string} */
     public function startRoomComposite(LiveStream $stream): array
     {
-        $path = 'live-recordings/server/stream-'.$stream->id.'-'.Str::uuid().'.mp4';
-        $disk = config('filesystems.disks.s3');
-        $endpoint = (string) ($disk['endpoint'] ?? '');
-
-        if (blank($disk['key'] ?? null) || blank($disk['secret'] ?? null) || blank($disk['bucket'] ?? null) || $endpoint === '') {
-            throw new RuntimeException('S3 settings for LiveKit Egress are incomplete.');
-        }
+        $path = 'stream-'.$stream->id.'-'.Str::uuid().'.mp4';
 
         $response = $this->request('livekit.Egress', 'StartRoomCompositeEgress', [
             'room_name' => $stream->room_name,
@@ -53,16 +47,8 @@ class LiveKitEgressService
             ],
             'file_outputs' => [[
                 'file_type' => 'MP4',
-                'filepath' => $path,
+                'filepath' => '/out/'.$path,
                 'disable_manifest' => true,
-                's3' => [
-                    'access_key' => $disk['key'],
-                    'secret' => $disk['secret'],
-                    'region' => $disk['region'] ?? 'ru-1',
-                    'endpoint' => $endpoint,
-                    'bucket' => $disk['bucket'],
-                    'force_path_style' => filter_var($disk['use_path_style_endpoint'] ?? true, FILTER_VALIDATE_BOOL),
-                ],
             ]],
         ], ['roomRecord' => true]);
 
@@ -108,6 +94,20 @@ class LiveKitEgressService
         }
 
         return null;
+    }
+
+    private function roomExists(string $roomName): bool
+    {
+        $response = $this->request('livekit.RoomService', 'ListRooms', [
+            'names' => [$roomName],
+        ], ['roomList' => true]);
+
+        if (! $response->successful()) {
+            return false;
+        }
+
+        return collect($response->json('rooms', []))
+            ->contains(fn (array $room): bool => ($room['name'] ?? null) === $roomName);
     }
 
     private function request(string $service, string $method, array $payload, array $videoGrant)

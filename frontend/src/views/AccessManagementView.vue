@@ -26,18 +26,20 @@ function localDateKey(date) {
     return `${year}-${month}-${day}`;
 }
 
-function upcomingStartDates() {
+function availableStartDates() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const dates = [];
-    for (let monthOffset = 0; monthOffset < 2; monthOffset += 1) {
+    for (let monthOffset = -1; monthOffset < 2; monthOffset += 1) {
         for (const day of [2, 15]) {
             const date = new Date(today.getFullYear(), today.getMonth() + monthOffset, day);
-            if (date >= today)
-                dates.push(date);
+            dates.push(date);
         }
     }
-    return dates.map((date) => ({
+    const previousDates = dates.filter((date) => date < today).slice(-2);
+    const currentAndFutureDates = dates.filter((date) => date >= today);
+
+    return [...previousDates, ...currentAndFutureDates].map((date) => ({
         value: localDateKey(date),
         label: new Intl.DateTimeFormat('ru-RU', {
             day: 'numeric',
@@ -47,7 +49,7 @@ function upcomingStartDates() {
     }));
 }
 
-const startDateOptions = upcomingStartDates();
+const startDateOptions = availableStartDates();
 const filteredUsers = computed(() => {
     const query = userSearch.value.trim().toLocaleLowerCase('ru-RU');
     if (!query)
@@ -208,7 +210,7 @@ onMounted(loadAccessData);
             <h3 class="mt-6 text-2xl font-extrabold">Доступы</h3>
             <p class="mt-2 text-sm leading-6 text-on-muted">Выберите участников, дату старта и количество месяцев полного доступа.</p>
           </div>
-          <span class="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-extrabold text-primary">{{ activeCount }} активных</span>
+          <span class="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-extrabold text-primary">{{ activeCount }} участниц</span>
         </div>
         <span class="mt-7 inline-flex items-center gap-2 text-sm font-extrabold text-primary">Открыть управление <span class="material-symbols-outlined text-[18px] transition group-hover:translate-x-1">arrow_forward</span></span>
       </button>

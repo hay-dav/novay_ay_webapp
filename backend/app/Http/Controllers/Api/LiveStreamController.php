@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\FinalizeLiveEgressRecording;
+use App\Jobs\FanOutLiveStreamStartedNotifications;
 use App\Jobs\OptimizeStoredMedia;
+use App\Jobs\StartLiveEgressRecording;
+use App\Jobs\StopLiveEgressRecording;
 use App\Models\LiveStream;
 use App\Models\LiveStreamViewer;
 use App\Models\Notification;
@@ -12,20 +14,15 @@ use App\Models\Workout;
 use App\Services\LiveRecordingAssembler;
 use App\Services\MediaStorage;
 use App\Services\LiveKitTokenService;
-use App\Services\LiveKitEgressService;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class LiveStreamController extends Controller
 {
-    public function __construct(
-        private readonly LiveKitTokenService $tokens,
-        private readonly LiveKitEgressService $egress,
-    )
+    public function __construct(private readonly LiveKitTokenService $tokens)
     {
     }
 
@@ -89,33 +86,12 @@ class LiveStreamController extends Controller
             'started_at' => now(),
             'host_heartbeat_at' => now(),
             'section' => $validated['section'] ?? 'workouts',
+            'egress_status' => 'EGRESS_QUEUED',
         ]);
         $stream->update(['room_name' => 'novaya-ya-live-'.$stream->id]);
 
-        try {
-            $this->egress->createRoom($stream->room_name);
-            $recording = $this->egress->startRoomComposite($stream);
-            $stream->update([
-                'egress_id' => $recording['id'],
-                'egress_path' => $recording['path'],
-                'egress_status' => 'EGRESS_STARTING',
-            ]);
-        } catch (\Throwable $exception) {
-            $stream->update(['status' => 'ended', 'ended_at' => now(), 'host_heartbeat_at' => null]);
-            Log::error('Could not start server-side live recording', ['stream_id' => $stream->id, 'exception' => $exception]);
-            abort(503, 'Не удалось запустить серверную запись эфира. Повторите попытку.');
-        }
-
-        User::query()
-            ->where('role', 'client')
-            ->where('access_status', 'paid')
-            ->each(fn (User $user) => Notification::query()->create([
-                'user_id' => $user->id,
-                'type' => 'live_stream',
-                'title' => 'Прямой эфир начался',
-                'body' => 'Началась прямая трансляция. Подключайтесь в разделе '.($stream->section === 'experts' ? '«Эфиры с экспертами».' : '«Тренировки».'),
-                'data' => ['live_stream_id' => $stream->id, 'link_url' => $stream->section === 'experts' ? '/expert-lives' : '/workouts'],
-            ]));
+        StartLiveEgressRecording::dispatch($stream->id)->afterCommit();
+        FanOutLiveStreamStartedNotifications::dispatch($stream->id)->afterCommit();
 
         return response()->json(['data' => $stream], 201);
     }
@@ -129,26 +105,14 @@ class LiveStreamController extends Controller
             403,
         );
 
-        if ($stream->egress_id) {
+        if ($stream->egress_id || in_array($stream->egress_status, ['EGRESS_QUEUED', 'EGRESS_STARTING', 'EGRESS_RETRYING'], true)) {
             return response()->json(['data' => $stream]);
         }
 
-        try {
-            $recording = $this->egress->startRoomComposite($stream);
-            $stream->update([
-                'egress_id' => $recording['id'],
-                'egress_path' => $recording['path'],
-                'egress_status' => 'EGRESS_STARTING',
-            ]);
-        } catch (\Throwable $exception) {
-            Log::error('Could not start server-side live recording after camera publication', [
-                'stream_id' => $stream->id,
-                'exception' => $exception,
-            ]);
-            abort(503, 'Не удалось запустить серверную запись эфира. Повторите попытку.');
-        }
+        $stream->forceFill(['egress_status' => 'EGRESS_QUEUED'])->save();
+        StartLiveEgressRecording::dispatch($stream->id)->afterCommit();
 
-        return response()->json(['data' => $stream->fresh()]);
+        return response()->json(['data' => $stream->fresh()], 202);
     }
 
     public function end(Request $request, LiveStream $stream)
@@ -301,19 +265,7 @@ class LiveStreamController extends Controller
 
     private function stopAndFinalizeEgress(LiveStream $stream): void
     {
-        if (! $stream->egress_id) {
-            return;
-        }
-
-        try {
-            $this->egress->stop($stream->egress_id);
-            FinalizeLiveEgressRecording::dispatch($stream->id)->delay(now()->addSeconds(5));
-        } catch (\Throwable $exception) {
-            // The stream itself must still close immediately. The job can
-            // pick up an Egress that was already ending on its own.
-            Log::warning('Could not request LiveKit Egress stop', ['stream_id' => $stream->id, 'exception' => $exception]);
-            FinalizeLiveEgressRecording::dispatch($stream->id)->delay(now()->addSeconds(10));
-        }
+        StopLiveEgressRecording::dispatch($stream->id)->afterCommit();
     }
 
     public function viewers(Request $request, LiveStream $stream)
@@ -336,7 +288,7 @@ class LiveStreamController extends Controller
             'duration_seconds' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $videoPath = app(MediaStorage::class)->store($request->file('video'), 'workouts/videos');
+        $videoPath = app(MediaStorage::class)->storeOptimized($request->file('video'), 'workouts/videos', 'video');
 
         $workout = Workout::query()->create([
             'title' => $stream->recording_title ?: 'Запись эфира от '.$stream->started_at->format('d.m.Y H:i'),
@@ -347,8 +299,6 @@ class LiveStreamController extends Controller
             'access_level' => $stream->recording_access_level ?: 'paid',
             'section' => $stream->section,
         ]);
-        OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
-
         $stream->update([
             'recording_workout_id' => $workout->id,
             'status' => 'ended',

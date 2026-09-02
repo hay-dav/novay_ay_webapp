@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Notification extends Model
 {
-    protected $fillable = ['user_id', 'type', 'title', 'body', 'data', 'read_at'];
+    protected $fillable = ['user_id', 'type', 'title', 'body', 'data', 'read_at', 'deduplication_key'];
 
     protected static function booted(): void
     {

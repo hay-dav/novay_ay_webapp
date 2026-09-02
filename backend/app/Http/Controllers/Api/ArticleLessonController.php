@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\OptimizeStoredMedia;
 use App\Models\ArticleLesson;
 use App\Models\ArticleLessonBlock;
 use App\Services\MediaStorage;
@@ -50,7 +49,7 @@ class ArticleLessonController extends Controller
         $validated = $this->validateLesson($request);
         $blocks = $this->decodeBlocks($validated['blocks'], $validated['section']);
         $coverPath = $request->hasFile('cover')
-            ? $media->store($request->file('cover'), 'article-lessons/covers', true)
+            ? $media->storeOptimized($request->file('cover'), 'article-lessons/covers', 'image', true)
             : null;
 
         $lesson = ArticleLesson::query()->create([
@@ -66,9 +65,6 @@ class ArticleLessonController extends Controller
         ]);
 
         $this->createBlocks($request, $media, $lesson, $blocks);
-        if ($coverPath) {
-            OptimizeStoredMedia::dispatch(ArticleLesson::class, $lesson->id, 'image_path', $coverPath, 'image', true);
-        }
 
         return response()->json(['data' => $this->presentLesson($lesson->fresh()->load('blocks'), $media)], 201);
     }
@@ -83,7 +79,7 @@ class ArticleLessonController extends Controller
         $previousPaths = $existingBlocks->flatMap(fn (ArticleLessonBlock $block) => [$block->image_path, $block->video_path])->filter();
         $previousCoverPath = $lesson->image_path;
         $coverPath = $request->hasFile('cover')
-            ? $media->store($request->file('cover'), 'article-lessons/covers', true)
+            ? $media->storeOptimized($request->file('cover'), 'article-lessons/covers', 'image', true)
             : $previousCoverPath;
 
         $lesson->update([
@@ -94,14 +90,12 @@ class ArticleLessonController extends Controller
         ]);
 
         if ($coverPath !== $previousCoverPath) {
-            OptimizeStoredMedia::dispatch(ArticleLesson::class, $lesson->id, 'image_path', $coverPath, 'image', true);
             $media->delete($previousCoverPath);
         }
 
         $newBlocks = $this->buildBlocks($request, $media, $blocks, $existingBlocks);
         $lesson->blocks()->delete();
-        $createdBlocks = $lesson->blocks()->createMany($newBlocks);
-        $this->dispatchOptimizers($createdBlocks, $previousPaths);
+        $lesson->blocks()->createMany($newBlocks);
 
         $usedPaths = collect($newBlocks)->flatMap(fn (array $block) => [$block['image_path'], $block['video_path']])->filter();
         $previousPaths->reject(fn (string $path) => $usedPaths->contains($path))->each(fn (string $path) => $media->delete($path));
@@ -173,8 +167,7 @@ class ArticleLessonController extends Controller
 
     private function createBlocks(Request $request, MediaStorage $media, ArticleLesson $lesson, array $blocks): void
     {
-        $createdBlocks = $lesson->blocks()->createMany($this->buildBlocks($request, $media, $blocks, collect()));
-        $this->dispatchOptimizers($createdBlocks, collect());
+        $lesson->blocks()->createMany($this->buildBlocks($request, $media, $blocks, collect()));
     }
 
     private function buildBlocks(Request $request, MediaStorage $media, array $blocks, $existingBlocks): array
@@ -195,7 +188,7 @@ class ArticleLessonController extends Controller
                 } else {
                     $image = $request->file('images.'.$index);
                     abort_unless($image, 422, 'Add an image to the image block.');
-                    $imagePath = $media->store($image, 'article-lessons', true);
+                    $imagePath = $media->storeOptimized($image, 'article-lessons', 'image', true);
                 }
             } else {
                 $existing = $existingBlocks->get((int) ($block['id'] ?? 0));
@@ -204,7 +197,7 @@ class ArticleLessonController extends Controller
                 } else {
                     $video = $request->file('videos.'.$index);
                     abort_unless($video, 422, 'Add a video to the video block.');
-                    $videoPath = $media->store($video, 'article-lessons/videos');
+                    $videoPath = $media->storeOptimized($video, 'article-lessons/videos', 'video');
                 }
             }
 
@@ -216,18 +209,6 @@ class ArticleLessonController extends Controller
                 'sort_order' => $index,
             ];
         })->all();
-    }
-
-    private function dispatchOptimizers($blocks, $existingPaths): void
-    {
-        $blocks->each(function (ArticleLessonBlock $block) use ($existingPaths): void {
-            if ($block->image_path && ! $existingPaths->contains($block->image_path)) {
-                OptimizeStoredMedia::dispatch(ArticleLessonBlock::class, $block->id, 'image_path', $block->image_path, 'image', true);
-            }
-            if ($block->video_path && ! $existingPaths->contains($block->video_path)) {
-                OptimizeStoredMedia::dispatch(ArticleLessonBlock::class, $block->id, 'video_path', $block->video_path, 'video');
-            }
-        });
     }
 
     private function presentLesson(ArticleLesson $lesson, MediaStorage $media): ArticleLesson

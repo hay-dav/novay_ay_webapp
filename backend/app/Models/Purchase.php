@@ -13,4 +13,3 @@ class Purchase extends Model
         return ['paid_at' => 'datetime'];
     }
 }
-

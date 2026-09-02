@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\OptimizeStoredMedia;
 use App\Models\Podcast;
 use App\Models\User;
 use App\Services\MediaStorage;
@@ -49,10 +48,10 @@ class PodcastController extends Controller
 
         $coverPath = null;
         if ($request->hasFile('cover')) {
-            $coverPath = $media->store($request->file('cover'), 'podcasts/covers', true);
+            $coverPath = $media->storeOptimized($request->file('cover'), 'podcasts/covers', 'image', true);
         }
 
-        $audioPath = $media->store($request->file('audio'), 'podcasts/audio');
+        $audioPath = $media->storeOptimized($request->file('audio'), 'podcasts/audio', 'audio');
 
         $podcast = Podcast::query()->create([
             'author_id' => $request->user()->id,
@@ -62,11 +61,6 @@ class PodcastController extends Controller
             'audio_path' => $audioPath,
             'access_level' => $validated['access_level'],
         ]);
-        if ($coverPath) {
-            OptimizeStoredMedia::dispatch(Podcast::class, $podcast->id, 'cover_path', $coverPath, 'image', true);
-        }
-        OptimizeStoredMedia::dispatch(Podcast::class, $podcast->id, 'audio_path', $audioPath, 'audio');
-
         return response()->json(['data' => $podcast], 201);
     }
 

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
+import ContentLoadingState from '@/components/ContentLoadingState.vue';
 import { useLiveStream } from '@/composables/useLiveStream';
 import VideoWatermark from '@/components/VideoWatermark.vue';
 const props = defineProps({ section: { type: String, default: 'workouts' } });
@@ -17,6 +18,7 @@ const {
     playbackMuted,
     microphoneEnabled,
     cameraEnabled,
+    hostCameraEnabled,
     recordingSaving,
     cameraFacingMode,
     cameraSwitching,
@@ -47,6 +49,7 @@ const isExpertSection = computed(() => props.section === 'experts');
 const hostMicrophoneEnabled = microphoneEnabled;
 const toggleHostMicrophone = toggleMicrophone;
 const workouts = ref([]);
+const workoutsLoading = ref(true);
 const activeFilter = ref('all');
 const searchQuery = ref('');
 const completed = ref({});
@@ -81,6 +84,7 @@ const form = ref({
 });
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const canManageWorkouts = computed(() => ['admin', 'curator', 'trainer'].includes(auth.user?.role ?? ''));
+const canManageExpertLives = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const canDownloadLiveRecordings = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const isAdmin = computed(() => auth.user?.role === 'admin');
 const canWatchLive = computed(() => ['client', 'curator'].includes(auth.user?.role ?? ''));
@@ -118,11 +122,17 @@ const sectionEmptyMessage = computed(() => isExpertSection.value
     ? 'Записи экспертных эфиров появятся здесь после завершения трансляции.'
     : emptyFilterMessage.value);
 async function load() {
-    const { data } = await api.get('/workouts', { params: { section: props.section } });
-    workouts.value = data.data;
-    completed.value = Object.fromEntries(workouts.value
-        .filter((workout) => workout.is_completed)
-        .map((workout) => [workout.id, true]));
+    workoutsLoading.value = true;
+    try {
+        const { data } = await api.get('/workouts', { params: { section: props.section } });
+        workouts.value = data.data;
+        completed.value = Object.fromEntries(workouts.value
+            .filter((workout) => workout.is_completed)
+            .map((workout) => [workout.id, true]));
+    }
+    finally {
+        workoutsLoading.value = false;
+    }
 }
 async function complete(workout) {
     await api.post(`/workouts/${workout.id}/complete`);
@@ -198,6 +208,7 @@ async function createWorkout() {
     payload.append('description', form.value.description);
     payload.append('video', form.value.video);
     payload.append('access_level', form.value.access_level);
+    payload.append('section', props.section);
     if (form.value.cover)
         payload.append('cover', form.value.cover);
     try {
@@ -213,7 +224,7 @@ async function createWorkout() {
         }
         catch {
             workouts.value = [
-                { ...data.data, content_type: 'video' },
+                { ...data.data, content_type: 'video', section: props.section },
                 ...workouts.value,
             ];
         }
@@ -510,6 +521,15 @@ onBeforeUnmount(() => {
           <span class="material-symbols-outlined text-[21px]">add</span>
           Добавить тренировку
         </button>
+        <button
+          v-if="canManageExpertLives && isExpertSection"
+          class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white shadow-[0_10px_30px_rgba(109,56,168,0.25)]"
+          type="button"
+          @click="openModal"
+        >
+          <span class="material-symbols-outlined text-[21px]">add</span>
+          Добавить эфир
+        </button>
       </div>
     </div>
 
@@ -540,7 +560,8 @@ onBeforeUnmount(() => {
       />
     </label>
 
-    <div v-if="filteredWorkouts.length" class="grid gap-5 lg:grid-cols-2">
+    <ContentLoadingState v-if="workoutsLoading" :label="isExpertSection ? 'Загружаем эфиры…' : 'Загружаем тренировки…'" />
+    <div v-else-if="filteredWorkouts.length" class="grid gap-5 lg:grid-cols-2">
       <article v-for="workout in filteredWorkouts" :key="workout.id" class="glass-panel relative overflow-hidden rounded-[28px]">
         <div v-if="workout.video_path" class="group relative aspect-video overflow-hidden bg-black">
           <video
@@ -725,7 +746,7 @@ onBeforeUnmount(() => {
                 <span class="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-1 text-[10px] font-bold text-white">Вы</span>
               </button>
               <button
-                v-if="!isAdmin && selectedParticipant"
+                v-if="!isAdmin && selectedParticipant && hostCameraEnabled"
                 class="live-conference-participant relative h-28 w-24 shrink-0 overflow-hidden rounded-xl border border-primary/70 bg-black text-left sm:h-32 sm:w-28"
                 type="button"
                 title="Вернуть видео тренера на основной экран"
@@ -943,7 +964,7 @@ onBeforeUnmount(() => {
           <div class="mb-6 flex items-center justify-between gap-4">
             <div>
               <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Новая публикация</p>
-              <h3 id="create-workout-title" class="mt-1 text-2xl font-extrabold">Добавить тренировку</h3>
+              <h3 id="create-workout-title" class="mt-1 text-2xl font-extrabold">{{ isExpertSection ? 'Добавить эфир' : 'Добавить тренировку' }}</h3>
             </div>
             <button class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-white/10 text-on-muted" type="button" aria-label="Закрыть" @click="closeModal">
               <span class="material-symbols-outlined">close</span>
@@ -952,13 +973,13 @@ onBeforeUnmount(() => {
 
           <div class="grid gap-5">
             <label class="grid gap-2 text-sm font-bold text-on-muted">
-              Название тренировки
-              <input v-model.trim="form.title" required maxlength="255" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/60" placeholder="Например, тренировка на всё тело" />
+              {{ isExpertSection ? 'Название эфира' : 'Название тренировки' }}
+              <input v-model.trim="form.title" required maxlength="255" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/60" :placeholder="isExpertSection ? 'Например, эфир с психологом' : 'Например, тренировка на всё тело'" />
             </label>
 
             <label class="grid gap-2 text-sm font-bold text-on-muted">
-              Описание тренировки
-              <textarea v-model.trim="form.description" required class="min-h-28 resize-y rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/60" placeholder="Расскажите, что понадобится и на какие мышцы рассчитана тренировка" />
+              {{ isExpertSection ? 'Описание эфира' : 'Описание тренировки' }}
+              <textarea v-model.trim="form.description" required class="min-h-28 resize-y rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/60" :placeholder="isExpertSection ? 'Расскажите о теме и эксперте' : 'Расскажите, что понадобится и на какие мышцы рассчитана тренировка'" />
             </label>
 
             <fieldset class="grid gap-2">
@@ -992,7 +1013,7 @@ onBeforeUnmount(() => {
               <label class="grid cursor-pointer content-start gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/50">
                 <span class="flex items-center gap-3 text-sm font-bold text-on-surface">
                   <span class="material-symbols-outlined text-primary">video_file</span>
-                  Видео тренировки
+                  {{ isExpertSection ? 'Видео эфира' : 'Видео тренировки' }}
                 </span>
                 <span class="grid aspect-video place-items-center rounded-xl bg-surface-container">
                   <span class="material-symbols-outlined text-[42px] text-primary">upload</span>
@@ -1013,7 +1034,7 @@ onBeforeUnmount(() => {
             <button class="rounded-2xl border border-white/10 px-5 py-3 text-sm font-bold text-on-muted" type="button" :disabled="saving" @click="closeModal">Отмена</button>
             <button class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-6 py-3 text-sm font-extrabold text-white disabled:cursor-wait disabled:opacity-60" type="submit" :disabled="saving">
               <span class="material-symbols-outlined text-[20px]">{{ saving ? 'progress_activity' : 'publish' }}</span>
-              {{ saving ? `Загрузка${uploadProgress ? ` ${uploadProgress}%` : '...'}` : 'Опубликовать тренировку' }}
+              {{ saving ? `Загрузка${uploadProgress ? ` ${uploadProgress}%` : '...'}` : isExpertSection ? 'Опубликовать эфир' : 'Опубликовать тренировку' }}
             </button>
           </div>
         </form>
