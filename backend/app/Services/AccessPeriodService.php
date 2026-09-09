@@ -9,6 +9,26 @@ use Illuminate\Support\Facades\DB;
 
 class AccessPeriodService
 {
+    /** Apply an access change made from the participant card, without a term. */
+    public function setManualAccess(User $user, string $accessStatus): void
+    {
+        DB::transaction(function () use ($user, $accessStatus): void {
+            $lockedUser = User::query()->lockForUpdate()->findOrFail($user->id);
+
+            AccessPeriod::query()
+                ->where('user_id', $lockedUser->id)
+                ->whereIn('status', ['scheduled', 'active'])
+                ->update(['status' => 'cancelled']);
+
+            $lockedUser->update([
+                'access_status' => $accessStatus,
+                'access_ends_at' => null,
+            ]);
+        });
+
+        $user->refresh();
+    }
+
     public function synchronize(): array
     {
         $today = now()->startOfDay();
@@ -105,5 +125,48 @@ class AccessPeriodService
         }
 
         return $period;
+    }
+
+    public function extend(AccessPeriod $period, int $months): AccessPeriod
+    {
+        return DB::transaction(function () use ($period, $months): AccessPeriod {
+            $lockedPeriod = AccessPeriod::query()->lockForUpdate()->findOrFail($period->id);
+            if ($lockedPeriod->status !== 'active') {
+                throw new \RuntimeException('Продлить можно только активный доступ.');
+            }
+
+            $endsOn = $lockedPeriod->ends_on->copy()->addMonthsNoOverflow($months);
+            $lockedPeriod->update([
+                'ends_on' => $endsOn->toDateString(),
+                'months' => $lockedPeriod->months + $months,
+            ]);
+
+            User::query()->whereKey($lockedPeriod->user_id)->update([
+                'access_status' => 'paid',
+                'access_ends_at' => $endsOn->startOfDay(),
+            ]);
+
+            return $lockedPeriod->refresh();
+        });
+    }
+
+    public function revoke(AccessPeriod $period): void
+    {
+        DB::transaction(function () use ($period): void {
+            $lockedPeriod = AccessPeriod::query()->lockForUpdate()->findOrFail($period->id);
+            if ($lockedPeriod->status !== 'active') {
+                throw new \RuntimeException('Отключить можно только активный доступ.');
+            }
+
+            AccessPeriod::query()
+                ->where('user_id', $lockedPeriod->user_id)
+                ->whereIn('status', ['scheduled', 'active'])
+                ->update(['status' => 'cancelled']);
+
+            User::query()->whereKey($lockedPeriod->user_id)->update([
+                'access_status' => 'free',
+                'access_ends_at' => null,
+            ]);
+        });
     }
 }

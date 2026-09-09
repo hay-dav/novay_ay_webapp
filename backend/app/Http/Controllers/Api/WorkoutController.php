@@ -10,6 +10,7 @@ use App\Models\WorkoutCompletion;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
@@ -26,6 +27,7 @@ class WorkoutController extends Controller
         $workouts = Workout::query()
             ->where('section', $section)
             ->when(! $isPaid, fn ($query) => $query->where('access_level', 'free'))
+            ->when($section === 'experts', fn ($query) => $query->orderByRaw('COALESCE(sort_order, 2147483647)'))
             ->latest()
             ->get();
         $recordingWorkoutIds = LiveStream::query()
@@ -98,6 +100,10 @@ class WorkoutController extends Controller
             : null;
         $videoPath = $media->storeOptimized($request->file('video'), 'workouts/videos', 'video');
 
+        if ($section === 'experts') {
+            Workout::query()->where('section', 'experts')->increment('sort_order');
+        }
+
         $workout = Workout::query()->create([
             'title' => $validated['title'],
             'description' => $validated['description'],
@@ -107,6 +113,9 @@ class WorkoutController extends Controller
             'timer_seconds' => 45,
             'access_level' => $validated['access_level'],
             'section' => $section,
+            'sort_order' => $section === 'experts'
+                ? 0
+                : null,
         ]);
         User::query()
             ->where('role', 'client')
@@ -137,6 +146,9 @@ class WorkoutController extends Controller
 
     public function update(Request $request, Workout $workout)
     {
+        if ($workout->section === 'experts') {
+            abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
+        }
         abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
 
         $validated = $request->validate([
@@ -148,6 +160,30 @@ class WorkoutController extends Controller
         $workout->update($validated);
 
         return response()->json(['data' => $workout->fresh()]);
+    }
+
+    public function reorderExpertLives(Request $request)
+    {
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
+
+        $validated = $request->validate([
+            'workout_ids' => ['required', 'array', 'min:1'],
+            'workout_ids.*' => ['required', 'integer', 'distinct', 'exists:workouts,id'],
+        ]);
+        $workoutIds = collect($validated['workout_ids'])->map(fn ($id) => (int) $id)->values();
+        abort_unless(
+            Workout::query()->where('section', 'experts')->whereIn('id', $workoutIds)->count() === $workoutIds->count(),
+            422,
+            'Можно изменять порядок только экспертных эфиров.',
+        );
+
+        DB::transaction(function () use ($workoutIds): void {
+            foreach ($workoutIds as $sortOrder => $workoutId) {
+                Workout::query()->whereKey($workoutId)->update(['sort_order' => $sortOrder]);
+            }
+        });
+
+        return response()->json(['data' => ['workout_ids' => $workoutIds]]);
     }
 
     public function complete(Request $request, Workout $workout)

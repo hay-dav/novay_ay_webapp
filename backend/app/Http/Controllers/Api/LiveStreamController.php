@@ -290,6 +290,10 @@ class LiveStreamController extends Controller
 
         $videoPath = app(MediaStorage::class)->storeOptimized($request->file('video'), 'workouts/videos', 'video');
 
+        if ($stream->section === 'experts') {
+            Workout::query()->where('section', 'experts')->increment('sort_order');
+        }
+
         $workout = Workout::query()->create([
             'title' => $stream->recording_title ?: 'Запись эфира от '.$stream->started_at->format('d.m.Y H:i'),
             'description' => $stream->recording_description ?: 'Запись прямой трансляции с тренером.',
@@ -298,6 +302,9 @@ class LiveStreamController extends Controller
             'timer_seconds' => 45,
             'access_level' => $stream->recording_access_level ?: 'paid',
             'section' => $stream->section,
+            'sort_order' => $stream->section === 'experts'
+                ? 0
+                : null,
         ]);
         $stream->update([
             'recording_workout_id' => $workout->id,
@@ -369,6 +376,10 @@ class LiveStreamController extends Controller
         ]);
         $videoPath = $assembler->assemble($stream->id, $validated['segment_count']);
 
+        if ($stream->section === 'experts') {
+            Workout::query()->where('section', 'experts')->increment('sort_order');
+        }
+
         $workout = Workout::query()->create([
             'title' => $stream->recording_title ?: 'Запись эфира от '.$stream->started_at->format('d.m.Y H:i'),
             'description' => $stream->recording_description ?: 'Запись прямой трансляции с тренером.',
@@ -377,6 +388,9 @@ class LiveStreamController extends Controller
             'timer_seconds' => 45,
             'access_level' => $stream->recording_access_level ?: 'paid',
             'section' => $stream->section,
+            'sort_order' => $stream->section === 'experts'
+                ? 0
+                : null,
         ]);
         OptimizeStoredMedia::dispatch(Workout::class, $workout->id, 'video_path', $videoPath, 'video');
 

@@ -10,6 +10,12 @@ const important = ref(null);
 const curatorConversations = ref([]);
 const showCuratorConversations = ref(false);
 const searchQuery = ref('');
+const broadcastOpen = ref(false);
+const broadcastSearch = ref('');
+const broadcastRecipientIds = ref([]);
+const broadcastBody = ref('');
+const broadcastSending = ref(false);
+const broadcastError = ref('');
 const messages = ref([]);
 const messagesLoading = ref(false);
 const activeChat = ref({ type: 'general', peerId: null });
@@ -39,6 +45,7 @@ const isRoom = computed(() => isGeneral.value || isImportant.value);
 const activeRoom = computed(() => isImportant.value ? important.value : general.value);
 const activeRoomSlug = computed(() => isImportant.value ? 'important-info' : 'general');
 const isAdmin = computed(() => auth.user?.role === 'admin');
+const canBroadcast = computed(() => isAdmin.value || Number(auth.user?.id) === 10);
 const isConversationView = computed(() => activeChat.value.type === 'curator-view');
 const selectedPeer = computed(() => peers.value.find((peer) => peer.id === activeChat.value.peerId) ?? null);
 const activeConversation = computed(() => activeChat.value.conversation ?? null);
@@ -97,6 +104,15 @@ const filteredChatItems = computed(() => {
     if (!query) return displayedChatItems.value;
     return displayedChatItems.value.filter((item) => `${item.name ?? ''} ${item.subtitle ?? ''}`.toLocaleLowerCase('ru-RU').includes(query));
 });
+const filteredBroadcastRecipients = computed(() => {
+    const query = broadcastSearch.value.trim().toLocaleLowerCase('ru-RU');
+    if (!query) return peers.value;
+    return peers.value.filter((peer) => peer.name.toLocaleLowerCase('ru-RU').includes(query));
+});
+const allVisibleBroadcastSelected = computed(() => filteredBroadcastRecipients.value.length > 0
+    && filteredBroadcastRecipients.value.every((peer) => broadcastRecipientIds.value.includes(peer.id)));
+const selectedBroadcastRecipients = computed(() => peers.value
+    .filter((peer) => broadcastRecipientIds.value.includes(peer.id)));
 const directoryAvatarById = computed(() => new Map(
     [...mentionables.value, ...peers.value]
         .filter((user) => user.avatar_path)
@@ -286,6 +302,38 @@ async function toggleChatPush() {
         chatError.value = 'Не удалось изменить настройку уведомлений чата.';
     } finally { chatPushChanging.value = false; }
 }
+function openBroadcast() {
+    broadcastRecipientIds.value = [];
+    broadcastSearch.value = '';
+    broadcastBody.value = '';
+    broadcastError.value = '';
+    broadcastOpen.value = true;
+}
+function toggleVisibleBroadcastRecipients() {
+    const visibleIds = filteredBroadcastRecipients.value.map((peer) => peer.id);
+    broadcastRecipientIds.value = allVisibleBroadcastSelected.value
+        ? broadcastRecipientIds.value.filter((id) => !visibleIds.includes(id))
+        : [...new Set([...broadcastRecipientIds.value, ...visibleIds])];
+}
+function removeBroadcastRecipient(userId) {
+    broadcastRecipientIds.value = broadcastRecipientIds.value.filter((id) => id !== userId);
+}
+async function sendBroadcast() {
+    if (!broadcastRecipientIds.value.length || !broadcastBody.value.trim() || broadcastSending.value) return;
+    broadcastSending.value = true;
+    broadcastError.value = '';
+    try {
+        const { data } = await api.post('/chat/broadcast', {
+            recipient_ids: broadcastRecipientIds.value,
+            body: broadcastBody.value.trim(),
+        });
+        broadcastOpen.value = false;
+        chatError.value = `Сообщение отправлено: ${data.data.recipients_count} получ.`;
+        await loadDirectory();
+    } catch (error) {
+        broadcastError.value = error.response?.data?.message ?? 'Не удалось отправить рассылку.';
+    } finally { broadcastSending.value = false; }
+}
 function selectPhoto(event) { const [photo] = event.target.files ?? []; if (photo) send({ photo }); event.target.value = ''; }
 async function toggleVoiceRecording() {
     if (recording.value) { mediaRecorder?.stop(); return; }
@@ -319,7 +367,7 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
           <button class="rounded-xl px-2 py-2 text-xs font-bold" :class="!showCuratorConversations ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="returnToOwnChats">Мои чаты</button>
           <button class="rounded-xl px-2 py-2 text-xs font-bold" :class="showCuratorConversations ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="showCuratorConversations = true">Чаты куратора</button>
         </div>
-        <div class="sticky top-0 z-10 border-b border-white/10 bg-surface-container/95 px-5 py-4 backdrop-blur lg:hidden"><h2 class="text-2xl font-extrabold">Чаты</h2><p class="mt-1 text-sm text-on-muted">Сопровождение и поддержка</p></div>
+        <div class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-white/10 bg-surface-container/95 px-5 py-4 backdrop-blur lg:hidden"><div><h2 class="text-2xl font-extrabold">Чаты</h2><p class="mt-1 text-sm text-on-muted">Сопровождение и поддержка</p></div><button v-if="canBroadcast" class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary/15 text-primary transition hover:bg-primary/25" type="button" title="Сделать рассылку" aria-label="Сделать рассылку" @click="openBroadcast"><span class="material-symbols-outlined">campaign</span></button></div>
         <p class="hidden px-3 pb-3 pt-2 text-xs font-bold uppercase text-on-muted lg:block">Диалоги</p>
         <button v-for="item in filteredChatItems" :key="`${item.type}-${item.id}`" class="chat-item flex w-full items-center gap-3 px-5 py-4 text-left transition lg:mb-1 lg:rounded-2xl lg:p-3" :class="(isRoom && item.type === activeChat.type) || (!isRoom && item.id === selectedPeer?.id) ? 'bg-primary/15 text-primary' : 'text-on-surface hover:bg-white/5'" type="button" @click="openChat(item)">
           <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-high text-primary"><img v-if="item.avatar_path" class="h-full w-full object-cover" :src="item.avatar_path" :alt="`Аватар ${item.name}`" @error="item.avatar_path = null" /><span v-else class="material-symbols-outlined">{{ item.icon }}</span></span>
@@ -327,7 +375,7 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
         </button>
       </aside>
       <div class="chat-dialog grid min-h-0 grid-rows-[auto_1fr_auto]" :class="mobileListOpen ? 'hidden lg:grid' : 'grid'">
-        <header class="flex min-w-0 items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5"><button class="grid h-10 w-8 shrink-0 place-items-center text-primary lg:hidden" type="button" aria-label="Вернуться к чатам" @click="showChatList"><span class="material-symbols-outlined">arrow_back</span></button><span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-primary"><img v-if="selectedPeer?.avatar_path && !isRoom" class="h-full w-full object-cover" :src="selectedPeer.avatar_path" :alt="`Аватар ${chatName}`" @error="selectedPeer.avatar_path = null" /><span v-else class="material-symbols-outlined">{{ isRoom ? (isImportant ? 'campaign' : 'groups') : 'person' }}</span></span><div class="min-w-0 flex-1"><strong class="block truncate text-sm">{{ chatName }}</strong><span class="block truncate text-xs text-on-muted">{{ chatSubtitle }}</span></div><button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-on-muted hover:bg-white/5 hover:text-primary disabled:opacity-50" type="button" :disabled="chatPushChanging" :title="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-label="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-pressed="chatPushEnabled" @click="toggleChatPush"><span class="material-symbols-outlined">{{ chatPushEnabled ? 'notifications' : 'notifications_off' }}</span></button></header>
+        <header class="flex min-w-0 items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5"><button class="grid h-10 w-8 shrink-0 place-items-center text-primary lg:hidden" type="button" aria-label="Вернуться к чатам" @click="showChatList"><span class="material-symbols-outlined">arrow_back</span></button><span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-primary"><img v-if="selectedPeer?.avatar_path && !isRoom" class="h-full w-full object-cover" :src="selectedPeer.avatar_path" :alt="`Аватар ${chatName}`" @error="selectedPeer.avatar_path = null" /><span v-else class="material-symbols-outlined">{{ isRoom ? (isImportant ? 'campaign' : 'groups') : 'person' }}</span></span><div class="min-w-0 flex-1"><strong class="block truncate text-sm">{{ chatName }}</strong><span class="block truncate text-xs text-on-muted">{{ chatSubtitle }}</span></div><button v-if="canBroadcast" class="hidden h-10 w-10 shrink-0 place-items-center rounded-xl text-on-muted hover:bg-white/5 hover:text-primary lg:grid" type="button" title="Сделать рассылку" aria-label="Сделать рассылку" @click="openBroadcast"><span class="material-symbols-outlined">campaign</span></button><button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-on-muted hover:bg-white/5 hover:text-primary disabled:opacity-50" type="button" :disabled="chatPushChanging" :title="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-label="chatPushEnabled ? 'Отключить push-уведомления чата' : 'Включить push-уведомления чата'" :aria-pressed="chatPushEnabled" @click="toggleChatPush"><span class="material-symbols-outlined">{{ chatPushEnabled ? 'notifications' : 'notifications_off' }}</span></button></header>
         <div ref="listRef" class="brand-scrollbar grid min-h-0 content-start gap-3 overflow-y-auto p-4 sm:p-5">
           <div v-for="message in messages" :key="message.id" class="flex items-end gap-2" :class="message.sender_id === auth.user?.id ? 'justify-end' : 'justify-start'">
             <span v-if="message.sender_id !== auth.user?.id && showMessageAvatar(message)" class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/15 text-[10px] font-extrabold text-primary"><img v-if="messageAvatar(message)" class="h-full w-full object-cover" :src="messageAvatar(message)" :alt="`Аватар ${message.sender?.name ?? 'пользователя'}`" @error="hideMessageAvatar(message.id)" /><span v-else aria-hidden="true">{{ messageAvatarInitials(message) }}</span></span>
@@ -373,6 +421,16 @@ onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', ref
         <button v-if="contextMessage.sender_id === auth.user?.id" class="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold text-red-200 hover:bg-red-500/10" type="button" @click="deleteFromMenu"><span class="material-symbols-outlined">delete</span>Удалить</button>
         <button class="mt-1 w-full rounded-2xl px-4 py-3 text-sm text-on-muted hover:bg-white/5" type="button" @click="closeMessageMenu">Отмена</button>
       </div>
+    </div>
+    <div v-if="broadcastOpen" class="fixed inset-0 z-[195] flex items-end justify-center bg-black/70 p-4 backdrop-blur-sm sm:items-center" role="dialog" aria-modal="true" aria-labelledby="broadcast-title" @click.self="broadcastOpen = false">
+      <form class="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-surface-highest shadow-2xl sm:max-h-[90dvh]" @submit.prevent="sendBroadcast">
+        <div class="flex items-start justify-between gap-4 border-b border-white/10 p-5"><div><p class="text-xs font-bold uppercase tracking-[0.14em] text-primary">Сообщения</p><h3 id="broadcast-title" class="mt-1 text-xl font-extrabold">Массовая рассылка</h3><p class="mt-1 text-sm text-on-muted">Выберите участниц и отправьте им одно сообщение.</p></div><button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-on-muted hover:bg-white/5" type="button" aria-label="Закрыть" :disabled="broadcastSending" @click="broadcastOpen = false"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 sm:grid-cols-2 sm:p-5">
+          <div class="min-h-0"><label class="relative block"><span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[20px] text-on-muted">search</span><input v-model.trim="broadcastSearch" class="w-full rounded-xl border border-white/10 bg-surface-low py-2.5 pl-10 pr-3 text-sm text-on-surface outline-none focus:border-primary/50" type="search" placeholder="Поиск по имени или фамилии" /></label><label class="mt-3 flex cursor-pointer items-center gap-2 text-sm font-bold text-primary"><input class="h-4 w-4 accent-[#c992ff]" type="checkbox" :checked="allVisibleBroadcastSelected" @change="toggleVisibleBroadcastRecipients" />{{ allVisibleBroadcastSelected ? 'Снять выбор с видимых' : 'Выбрать видимых' }}</label><div v-if="selectedBroadcastRecipients.length" class="mt-3 rounded-2xl border border-primary/20 bg-primary/10 p-3"><p class="text-xs font-bold uppercase tracking-[0.12em] text-primary">Выбрано: {{ selectedBroadcastRecipients.length }}</p><div class="mt-2 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto"><button v-for="peer in selectedBroadcastRecipients" :key="peer.id" class="inline-flex max-w-full items-center gap-1 rounded-full bg-surface-high px-2 py-1 text-xs font-semibold text-on-surface hover:bg-red-500/15" type="button" :title="`Убрать ${peer.name}`" @click="removeBroadcastRecipient(peer.id)"><span class="truncate">{{ peer.name }}</span><span class="material-symbols-outlined text-[14px]">close</span></button></div></div><div class="brand-scrollbar mt-3 max-h-52 overflow-y-auto pr-1 sm:max-h-72"><label v-for="peer in filteredBroadcastRecipients" :key="peer.id" class="flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5"><input v-model="broadcastRecipientIds" class="h-4 w-4 accent-[#c992ff]" type="checkbox" :value="peer.id" /><span class="min-w-0 flex-1 truncate text-sm font-semibold">{{ peer.name }}</span></label><p v-if="!filteredBroadcastRecipients.length" class="p-3 text-sm text-on-muted">Участницы не найдены.</p></div></div>
+          <div class="flex min-h-0 flex-col"><label class="text-sm font-bold text-on-muted">Сообщение<textarea v-model="broadcastBody" class="mt-2 min-h-32 w-full resize-y rounded-2xl border border-white/10 bg-surface-low p-3 text-sm text-on-surface outline-none focus:border-primary/50 sm:min-h-40" maxlength="2000" placeholder="Текст рассылки" required /></label><p class="mt-2 text-xs text-on-muted">Выбрано: {{ broadcastRecipientIds.length }} · {{ broadcastBody.length }}/2000</p><p v-if="broadcastError" class="mt-3 rounded-xl border border-red-400/25 bg-red-500/10 p-3 text-sm text-red-200">{{ broadcastError }}</p></div>
+        </div>
+        <div class="flex shrink-0 justify-end gap-3 border-t border-white/10 p-4 sm:p-5"><button class="rounded-xl px-4 py-2 text-sm font-bold text-on-muted hover:bg-white/5" type="button" :disabled="broadcastSending" @click="broadcastOpen = false">Отмена</button><button class="rounded-xl bg-primary px-5 py-2 text-sm font-extrabold text-[#470382] disabled:opacity-50" type="submit" :disabled="broadcastSending || !broadcastRecipientIds.length || !broadcastBody.trim()">{{ broadcastSending ? 'Отправляем…' : 'Отправить' }}</button></div>
+      </form>
     </div>
     <div v-if="activePhoto" class="fixed inset-0 z-[200] grid place-items-center bg-black/90 p-4" role="dialog" aria-modal="true" @click.self="activePhoto = null"><button class="absolute right-5 top-5 z-10 grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white" type="button" aria-label="Закрыть" @click="activePhoto = null"><span class="material-symbols-outlined">close</span></button><img class="h-auto max-h-[90dvh] w-auto max-w-[94vw] rounded-xl object-contain" :src="activePhoto" alt="Фото в сообщении" @error="chatError = 'Не удалось загрузить фотографию.'" /></div>
   </section>

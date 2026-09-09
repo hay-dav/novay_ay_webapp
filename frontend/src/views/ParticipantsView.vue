@@ -35,6 +35,7 @@ const staffStatuses = [
     { value: 'start_15', label: 'Старт 15 число' },
     { value: 'needs_support', label: 'Нужна поддержка' },
     { value: 'dropped_out', label: 'Выбыла' },
+    { value: 'no_feedback', label: 'Без обратной связи' },
 ];
 const canViewStaffStatus = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const canManageStaffStatus = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));

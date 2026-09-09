@@ -64,11 +64,29 @@ class AccessManagementController extends Controller
             ])
             ->values();
 
+        $activePeriods = AccessPeriod::query()
+            ->with('user:id,name,access_status,access_ends_at')
+            ->where('status', 'active')
+            ->orderBy('ends_on')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (AccessPeriod $period) => $period->user !== null)
+            ->map(fn (AccessPeriod $period) => [
+                'period_id' => $period->id,
+                'user_id' => $period->user_id,
+                'name' => $period->user->name,
+                'starts_on' => $period->starts_on->toDateString(),
+                'ends_on' => $period->ends_on->toDateString(),
+                'months' => $period->months,
+            ])
+            ->values();
+
         return response()->json(['data' => [
             'users' => $users,
             'active_count' => User::query()->where('role', 'client')->count(),
             'expired' => $expiredPeriods,
             'scheduled' => $scheduledPeriods,
+            'active' => $activePeriods,
         ]]);
     }
 
@@ -151,6 +169,36 @@ class AccessManagementController extends Controller
         return response()->json(['data' => [
             'cancelled_count' => $cancelledCount,
         ]]);
+    }
+
+    public function updateActive(Request $request, AccessPeriod $accessPeriod, AccessPeriodService $periods)
+    {
+        $this->authorizeStaff($request);
+        abort_unless($accessPeriod->status === 'active', 404);
+
+        $validated = $request->validate([
+            'action' => ['required', Rule::in(['extend', 'revoke'])],
+            'months' => ['nullable', 'integer', 'min:1', 'max:24'],
+        ]);
+
+        if ($validated['action'] === 'extend') {
+            if (empty($validated['months'])) {
+                throw ValidationException::withMessages(['months' => 'Укажите количество месяцев для продления.']);
+            }
+
+            $period = $periods->extend($accessPeriod, (int) $validated['months']);
+
+            return response()->json(['data' => [
+                'action' => 'extend',
+                'period_id' => $period->id,
+                'ends_on' => $period->ends_on->toDateString(),
+                'months' => $period->months,
+            ]]);
+        }
+
+        $periods->revoke($accessPeriod);
+
+        return response()->json(['data' => ['action' => 'revoke']]);
     }
 
     private function authorizeStaff(Request $request): void

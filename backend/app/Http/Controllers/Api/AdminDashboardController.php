@@ -11,6 +11,7 @@ use App\Models\NotificationTemplate;
 use App\Models\ProgressEntry;
 use App\Models\User;
 use App\Models\WorkoutCompletion;
+use App\Services\AccessPeriodService;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -127,7 +128,7 @@ class AdminDashboardController extends Controller
         ]);
     }
 
-    public function updateUser(Request $request, User $user)
+    public function updateUser(Request $request, User $user, AccessPeriodService $periods)
     {
         abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
         $this->assertCanAccessClient($request, $user);
@@ -136,7 +137,7 @@ class AdminDashboardController extends Controller
             abort_unless(in_array($request->user()->role->value, ['admin', 'curator'], true), 403, 'Статус участницы может менять только администратор или куратор.');
         }
 
-        $user->update($request->validate([
+        $validated = $request->validate([
             'access_status' => ['nullable', 'in:free,paid'],
             'group_name' => ['nullable', 'string', 'max:255'],
             'tags' => ['nullable', 'array'],
@@ -144,7 +145,14 @@ class AdminDashboardController extends Controller
             'access_ends_at' => ['nullable', 'date'],
             'blocked_at' => ['nullable', 'date'],
             'archived_at' => ['nullable', 'date'],
-        ]));
+        ]);
+
+        if ($request->has('access_status')) {
+            $periods->setManualAccess($user, $validated['access_status'] ?? 'free');
+            unset($validated['access_status'], $validated['access_ends_at']);
+        }
+
+        $user->update($validated);
 
         return response()->json(['data' => $user->makeVisible('staff_status')]);
     }

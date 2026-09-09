@@ -9,12 +9,17 @@ const grantModalOpen = ref(false);
 const users = ref([]);
 const expired = ref([]);
 const scheduled = ref([]);
-const activeCount = ref(0);
-const userSearch = ref('');
-const expiredSearch = ref('');
+const active = ref([]);
+  const activeCount = ref(0);
+  const userSearch = ref('');
+  const expiredSearch = ref('');
+  const activeSearch = ref('');
 const selectedUserIds = ref([]);
 const selectedScheduledIds = ref([]);
 const scheduledErrorMessage = ref('');
+const activeErrorMessage = ref('');
+const updatingActivePeriodId = ref(null);
+const extensionMonths = ref({});
 const errorMessage = ref('');
 const successMessage = ref('');
 const grantForm = ref({ starts_on: '', months: 1 });
@@ -56,12 +61,18 @@ const filteredUsers = computed(() => {
         return users.value;
     return users.value.filter((user) => user.name.toLocaleLowerCase('ru-RU').includes(query));
 });
-const filteredExpired = computed(() => {
-    const query = expiredSearch.value.trim().toLocaleLowerCase('ru-RU');
-    if (!query)
-        return expired.value;
-    return expired.value.filter((item) => item.name.toLocaleLowerCase('ru-RU').includes(query));
-});
+  const filteredExpired = computed(() => {
+      const query = expiredSearch.value.trim().toLocaleLowerCase('ru-RU');
+      if (!query)
+          return expired.value;
+      return expired.value.filter((item) => item.name.toLocaleLowerCase('ru-RU').includes(query));
+  });
+  const filteredActive = computed(() => {
+      const query = activeSearch.value.trim().toLocaleLowerCase('ru-RU');
+      if (!query)
+          return active.value;
+      return active.value.filter((item) => item.name.toLocaleLowerCase('ru-RU').includes(query));
+  });
 const scheduledOnSecond = computed(() => scheduled.value.filter((item) => Number(item.starts_on?.slice(-2)) === 2));
 const scheduledOnFifteenth = computed(() => scheduled.value.filter((item) => Number(item.starts_on?.slice(-2)) === 15));
 const allVisibleSelected = computed(() => filteredUsers.value.length > 0
@@ -85,6 +96,7 @@ async function loadAccessData() {
         users.value = data.data.users ?? [];
         expired.value = data.data.expired ?? [];
         scheduled.value = data.data.scheduled ?? [];
+        active.value = data.data.active ?? [];
         selectedScheduledIds.value = selectedScheduledIds.value.filter((periodId) => scheduled.value.some((item) => item.period_id === periodId));
         activeCount.value = Number(data.data.active_count ?? 0);
     }
@@ -189,6 +201,48 @@ async function deleteSelectedScheduled() {
     }
 }
 
+async function extendActiveAccess(item) {
+    const months = Number(extensionMonths.value[item.period_id] ?? 1);
+    if (!Number.isInteger(months) || months < 1 || months > 24) {
+        activeErrorMessage.value = 'Укажите от 1 до 24 месяцев для продления.';
+        return;
+    }
+
+    updatingActivePeriodId.value = item.period_id;
+    activeErrorMessage.value = '';
+    try {
+        await api.patch(`/admin/access-management/active/${item.period_id}`, {
+            action: 'extend',
+            months,
+        });
+        await loadAccessData();
+    }
+    catch (error) {
+        activeErrorMessage.value = error.response?.data?.message ?? 'Не удалось продлить доступ.';
+    }
+    finally {
+        updatingActivePeriodId.value = null;
+    }
+}
+
+async function revokeActiveAccess(item) {
+    if (!window.confirm(`Отключить полный доступ для «${item.name}»?`))
+        return;
+
+    updatingActivePeriodId.value = item.period_id;
+    activeErrorMessage.value = '';
+    try {
+        await api.patch(`/admin/access-management/active/${item.period_id}`, { action: 'revoke' });
+        await loadAccessData();
+    }
+    catch (error) {
+        activeErrorMessage.value = error.response?.data?.message ?? 'Не удалось отключить доступ.';
+    }
+    finally {
+        updatingActivePeriodId.value = null;
+    }
+}
+
 onMounted(loadAccessData);
 </script>
 
@@ -229,15 +283,49 @@ onMounted(loadAccessData);
           <input v-model.trim="expiredSearch" class="w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-12 pr-4 text-sm text-on-surface outline-none focus:border-primary/50" type="search" placeholder="Поиск по имени или фамилии" />
         </label>
 
-        <div v-if="filteredExpired.length" class="brand-scrollbar mt-4 grid max-h-80 gap-3 overflow-y-auto pr-1">
-          <div v-for="item in filteredExpired" :key="item.period_id" class="rounded-2xl border border-white/10 bg-surface-container p-4">
+        <div v-if="filteredExpired.length" class="brand-scrollbar mt-4 grid w-full min-w-0 max-h-80 gap-3 overflow-x-hidden overflow-y-auto pr-1">
+          <div v-for="item in filteredExpired" :key="item.period_id" class="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-surface-container p-4">
             <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div class="min-w-0"><strong class="block truncate">{{ item.name }}</strong><span class="mt-1 block text-xs text-on-muted">Закончился {{ formatDate(item.ends_on) }}</span></div>
+              <div class="min-w-0 flex-1"><strong class="block truncate">{{ item.name }}</strong><span class="mt-1 block text-xs text-on-muted">Закончился {{ formatDate(item.ends_on) }}</span></div>
               <button class="shrink-0 rounded-xl border border-primary/30 px-4 py-2 text-xs font-extrabold text-primary transition hover:bg-primary/10" type="button" @click="openGrantModal(item.user_id)">Продлить доступ</button>
             </div>
           </div>
         </div>
         <p v-else class="mt-5 rounded-2xl border border-white/10 bg-surface-container p-4 text-sm text-on-muted">{{ expired.length ? 'По вашему запросу ничего не найдено.' : 'Завершённых периодов доступа пока нет.' }}</p>
+      </article>
+
+      <article class="glass-panel min-h-64 rounded-[28px] p-6 lg:col-span-2">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <span class="grid h-14 w-14 place-items-center rounded-2xl bg-emerald-500/10 text-emerald-200"><span class="material-symbols-outlined text-[30px]">event_available</span></span>
+            <h3 class="mt-6 text-2xl font-extrabold">Активные доступы</h3>
+            <p class="mt-2 text-sm leading-6 text-on-muted">Продлевайте срок активного доступа или отключайте его полностью.</p>
+          </div>
+          <span class="rounded-full border border-emerald-300/20 bg-emerald-500/10 px-3 py-1 text-xs font-extrabold text-emerald-200">{{ active.length }}</span>
+        </div>
+
+          <p v-if="activeErrorMessage" class="mt-4 rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200">{{ activeErrorMessage }}</p>
+
+          <label v-if="active.length" class="relative mt-5 block">
+            <span class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[20px] text-on-muted">search</span>
+            <input v-model.trim="activeSearch" class="w-full rounded-2xl border border-white/10 bg-surface-low py-3 pl-12 pr-4 text-sm text-on-surface outline-none focus:border-primary/50" type="search" placeholder="Поиск по имени или фамилии" />
+          </label>
+
+        <div v-if="filteredActive.length" class="brand-scrollbar mt-5 grid w-full min-w-0 max-h-[34rem] gap-3 overflow-x-hidden overflow-y-auto pr-1">
+          <div v-for="item in filteredActive" :key="item.period_id" class="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-surface-container p-4">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div class="min-w-0 flex-1"><strong class="block truncate">{{ item.name }}</strong><span class="mt-1 block text-xs text-on-muted">С {{ formatDate(item.starts_on) }} до {{ formatDate(item.ends_on) }} · {{ item.months }} мес.</span></div>
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label class="flex items-center gap-2 text-xs font-bold text-on-muted">Продлить на
+                  <input v-model.number="extensionMonths[item.period_id]" class="w-16 rounded-xl border border-white/10 bg-surface-low px-2 py-2 text-center text-sm text-on-surface outline-none focus:border-primary/50" type="number" min="1" max="24" placeholder="1" :disabled="updatingActivePeriodId === item.period_id" /> мес.
+                </label>
+                <button class="rounded-xl border border-primary/30 px-4 py-2 text-xs font-extrabold text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50" type="button" :disabled="updatingActivePeriodId === item.period_id" @click="extendActiveAccess(item)">{{ updatingActivePeriodId === item.period_id ? 'Сохраняем…' : 'Продлить' }}</button>
+                <button class="rounded-xl border border-red-300/25 px-4 py-2 text-xs font-extrabold text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50" type="button" :disabled="updatingActivePeriodId === item.period_id" @click="revokeActiveAccess(item)">Отключить</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p v-else class="mt-5 rounded-2xl border border-white/10 bg-surface-container p-4 text-sm text-on-muted">{{ active.length ? 'По вашему запросу ничего не найдено.' : 'Активных срочных доступов пока нет.' }}</p>
       </article>
 
       <article class="glass-panel min-h-64 rounded-[28px] p-6 lg:col-span-2">
@@ -343,3 +431,26 @@ onMounted(loadAccessData);
     </Teleport>
   </section>
 </template>
+
+<style scoped>
+.brand-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #8c55c7 #211e25;
+}
+
+.brand-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 0;
+}
+
+.brand-scrollbar::-webkit-scrollbar-track {
+  background: #211e25;
+  border-radius: 999px;
+}
+
+.brand-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid #211e25;
+  border-radius: 999px;
+  background: linear-gradient(#dbb8ff, #8c55c7);
+}
+</style>

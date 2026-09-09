@@ -15,6 +15,9 @@ const coverPreview = ref('');
 const coverInput = ref(null);
 const audioInput = ref(null);
 const form = ref({ title: '', description: '', cover: null, audio: null, access_level: 'paid' });
+const audioPlayers = new Map();
+const playback = ref({});
+const openRateMenuId = ref(null);
 const canManagePodcasts = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const filteredPodcasts = computed(() => {
     const query = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
@@ -22,6 +25,68 @@ const filteredPodcasts = computed(() => {
         return podcasts.value;
     return podcasts.value.filter((podcast) => podcast.title?.toLocaleLowerCase('ru-RU').includes(query));
 });
+function playerState(podcastId) {
+    return playback.value[podcastId] ?? { currentTime: 0, duration: 0, playing: false, rate: 1 };
+}
+function updatePlayerState(podcastId, patch) {
+    playback.value = { ...playback.value, [podcastId]: { ...playerState(podcastId), ...patch } };
+}
+function setAudioPlayer(podcastId, player) {
+    if (player)
+        audioPlayers.set(podcastId, player);
+    else
+        audioPlayers.delete(podcastId);
+}
+function formatDuration(value) {
+    const totalSeconds = Math.max(0, Math.floor(Number(value) || 0));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+}
+async function togglePlayback(podcastId) {
+    const player = audioPlayers.get(podcastId);
+    if (!player)
+        return;
+    if (!player.paused) {
+        player.pause();
+        return;
+    }
+    for (const [id, otherPlayer] of audioPlayers) {
+        if (id !== podcastId && !otherPlayer.paused) {
+            otherPlayer.pause();
+            updatePlayerState(id, { playing: false });
+        }
+    }
+    try {
+        await player.play();
+    }
+    catch {
+        updatePlayerState(podcastId, { playing: false });
+    }
+}
+function seekPodcast(podcastId, event) {
+    const player = audioPlayers.get(podcastId);
+    if (!player)
+        return;
+    const currentTime = Number(event.target.value);
+    player.currentTime = currentTime;
+    updatePlayerState(podcastId, { currentTime });
+}
+function setPlaybackRate(podcastId, rate) {
+    const player = audioPlayers.get(podcastId);
+    if (player)
+        player.playbackRate = rate;
+    updatePlayerState(podcastId, { rate });
+    openRateMenuId.value = null;
+}
+function onLoadedMetadata(podcastId, event) {
+    const player = event.target;
+    player.playbackRate = playerState(podcastId).rate;
+    updatePlayerState(podcastId, { duration: player.duration, currentTime: player.currentTime });
+}
+function onTimeUpdate(podcastId, event) {
+    updatePlayerState(podcastId, { currentTime: event.target.currentTime, duration: event.target.duration });
+}
 
 async function load() {
     podcastsLoading.value = true;
@@ -114,7 +179,7 @@ onMounted(load);
       <article v-for="podcast in filteredPodcasts" :key="podcast.id" class="glass-panel overflow-hidden rounded-[28px]">
         <img v-if="podcast.cover_path" class="aspect-video w-full object-cover" :src="podcast.cover_path" :alt="podcast.title" />
         <div v-else class="grid aspect-video place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-6xl">headphones</span></div>
-        <div class="p-5"><div class="flex items-center justify-between gap-3"><span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">{{ podcast.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}</span><span class="material-symbols-outlined text-primary">graphic_eq</span></div><h3 class="mt-4 text-xl font-extrabold">{{ podcast.title }}</h3><p class="mt-2 text-sm leading-6 text-on-muted">{{ podcast.description }}</p><audio class="mt-5 w-full" :src="podcast.audio_url" controls preload="none" controlsList="nodownload noplaybackrate" /><button v-if="canManagePodcasts" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 px-4 py-3 text-sm font-extrabold text-red-200 hover:bg-red-500/10" type="button" @click="deletePodcast(podcast)"><span class="material-symbols-outlined text-[20px]">delete</span>Удалить подкаст</button></div>
+        <div class="p-5"><div class="flex items-center justify-between gap-3"><span class="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">{{ podcast.access_level === 'free' ? 'Бесплатно' : 'Полный доступ' }}</span><span class="material-symbols-outlined text-primary">graphic_eq</span></div><h3 class="mt-4 text-xl font-extrabold">{{ podcast.title }}</h3><p class="mt-2 text-sm leading-6 text-on-muted">{{ podcast.description }}</p><div class="podcast-player relative mt-5"><audio :ref="(player) => setAudioPlayer(podcast.id, player)" :src="podcast.audio_url" preload="none" @loadedmetadata="onLoadedMetadata(podcast.id, $event)" @timeupdate="onTimeUpdate(podcast.id, $event)" @play="updatePlayerState(podcast.id, { playing: true })" @pause="updatePlayerState(podcast.id, { playing: false })" @ended="updatePlayerState(podcast.id, { playing: false, currentTime: 0 })" /><div class="flex items-center gap-3"><button class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-primary text-[#470382] transition hover:brightness-110" type="button" :aria-label="playerState(podcast.id).playing ? 'Пауза' : 'Воспроизвести'" @click="togglePlayback(podcast.id)"><span class="material-symbols-outlined">{{ playerState(podcast.id).playing ? 'pause' : 'play_arrow' }}</span></button><span class="shrink-0 text-xs font-bold tabular-nums text-on-surface">{{ formatDuration(playerState(podcast.id).currentTime) }}</span><input class="podcast-progress min-w-0 flex-1" type="range" min="0" :max="playerState(podcast.id).duration || 0" step="0.1" :value="playerState(podcast.id).currentTime" :disabled="!playerState(podcast.id).duration" aria-label="Перемотка подкаста" @input="seekPodcast(podcast.id, $event)" /><span class="shrink-0 text-xs font-bold tabular-nums text-on-muted">{{ formatDuration(playerState(podcast.id).duration) }}</span><button class="grid h-10 min-w-11 place-items-center rounded-xl border border-white/10 px-2 text-xs font-extrabold text-primary transition hover:bg-primary/10" type="button" aria-label="Скорость воспроизведения" :aria-expanded="openRateMenuId === podcast.id" @click="openRateMenuId = openRateMenuId === podcast.id ? null : podcast.id">{{ String(playerState(podcast.id).rate).replace('.', ',') }}×</button></div><div v-if="openRateMenuId === podcast.id" class="absolute bottom-[calc(100%+0.5rem)] right-0 z-10 grid min-w-28 overflow-hidden rounded-2xl border border-white/10 bg-surface-highest p-1 shadow-2xl"><button v-for="rate in [0.5, 1, 1.25, 1.5, 2]" :key="rate" class="rounded-xl px-3 py-2 text-left text-sm font-bold transition hover:bg-primary/15" :class="playerState(podcast.id).rate === rate ? 'bg-primary/15 text-primary' : 'text-on-surface'" type="button" @click="setPlaybackRate(podcast.id, rate)">{{ String(rate).replace('.', ',') }}×</button></div></div><button v-if="canManagePodcasts" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 px-4 py-3 text-sm font-extrabold text-red-200 hover:bg-red-500/10" type="button" @click="deletePodcast(podcast)"><span class="material-symbols-outlined text-[20px]">delete</span>Удалить подкаст</button></div>
       </article>
     </div>
     <div v-else-if="podcasts.length && searchQuery.trim()" class="glass-panel grid min-h-52 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">search_off</span><h3 class="mt-3 text-xl font-extrabold">Подкасты не найдены</h3><p class="mt-2 text-sm text-on-muted">Попробуйте изменить запрос или очистить поиск.</p></div></div>
@@ -131,3 +196,46 @@ onMounted(load);
     </Teleport>
   </section>
 </template>
+
+<style scoped>
+.podcast-player {
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 1rem;
+  background: rgb(23 20 28 / 0.88);
+  padding: 0.75rem;
+}
+
+.podcast-player audio {
+  display: none;
+}
+
+.podcast-progress {
+  height: 0.35rem;
+  appearance: none;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.18);
+  cursor: pointer;
+}
+
+.podcast-progress::-webkit-slider-thumb {
+  width: 0.9rem;
+  height: 0.9rem;
+  appearance: none;
+  border: 2px solid #211e25;
+  border-radius: 999px;
+  background: #dbb8ff;
+}
+
+.podcast-progress::-moz-range-thumb {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid #211e25;
+  border-radius: 999px;
+  background: #dbb8ff;
+}
+
+.podcast-progress:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+</style>

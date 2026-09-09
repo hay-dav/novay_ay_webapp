@@ -58,6 +58,8 @@ const showLiveStartModal = ref(false);
 const saving = ref(false);
 const uploadProgress = ref(0);
 const deletingId = ref(null);
+const reordering = ref(false);
+const orderingError = ref('');
 const editingWorkout = ref(null);
 const editSaving = ref(false);
 const editForm = ref({ title: '', description: '', access_level: 'paid' });
@@ -270,6 +272,32 @@ async function deleteWorkout(workout) {
     }
     finally {
         deletingId.value = null;
+    }
+}
+function workoutIndex(workout) {
+    return workouts.value.findIndex((item) => item.id === workout.id);
+}
+async function moveExpertLife(workout, direction) {
+    const currentIndex = workoutIndex(workout);
+    const targetIndex = currentIndex + direction;
+    if (reordering.value || currentIndex < 0 || targetIndex < 0 || targetIndex >= workouts.value.length)
+        return;
+
+    const previousWorkouts = [...workouts.value];
+    const reorderedWorkouts = [...workouts.value];
+    [reorderedWorkouts[currentIndex], reorderedWorkouts[targetIndex]] = [reorderedWorkouts[targetIndex], reorderedWorkouts[currentIndex]];
+    workouts.value = reorderedWorkouts;
+    reordering.value = true;
+    orderingError.value = '';
+    try {
+        await api.patch('/workouts/expert-order', { workout_ids: reorderedWorkouts.map((item) => item.id) });
+    }
+    catch (error) {
+        workouts.value = previousWorkouts;
+        orderingError.value = error.response?.data?.message ?? 'Не удалось изменить порядок эфиров.';
+    }
+    finally {
+        reordering.value = false;
     }
 }
 async function finishBroadcast() {
@@ -560,9 +588,14 @@ onBeforeUnmount(() => {
       />
     </label>
 
+    <p v-if="orderingError" class="rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200" role="alert">{{ orderingError }}</p>
     <ContentLoadingState v-if="workoutsLoading" :label="isExpertSection ? 'Загружаем эфиры…' : 'Загружаем тренировки…'" />
     <div v-else-if="filteredWorkouts.length" class="grid gap-5 lg:grid-cols-2">
       <article v-for="workout in filteredWorkouts" :key="workout.id" class="glass-panel relative overflow-hidden rounded-[28px]">
+        <div v-if="isExpertSection && canManageExpertLives && !searchQuery.trim()" class="absolute right-3 top-3 z-20 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
+          <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || workoutIndex(workout) === 0" :aria-label="`Переместить эфир «${workout.title}» выше`" @click.stop="moveExpertLife(workout, -1)"><span class="material-symbols-outlined text-[20px]">arrow_upward</span></button>
+          <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || workoutIndex(workout) === workouts.length - 1" :aria-label="`Переместить эфир «${workout.title}» ниже`" @click.stop="moveExpertLife(workout, 1)"><span class="material-symbols-outlined text-[20px]">arrow_downward</span></button>
+        </div>
         <div v-if="workout.video_path" class="group relative aspect-video overflow-hidden bg-black">
           <video
             class="pointer-events-none h-full w-full object-cover"
@@ -607,7 +640,7 @@ onBeforeUnmount(() => {
               <h3 class="mt-3 break-words text-xl font-extrabold">{{ workout.title }}</h3>
             </div>
             <div class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-surface-container text-primary">
-              <span class="material-symbols-outlined">exercise</span>
+              <span class="material-symbols-outlined">{{ isExpertSection ? 'record_voice_over' : 'exercise' }}</span>
             </div>
           </div>
           <p class="mt-3 text-sm leading-6 text-on-muted">{{ workout.description }}</p>
@@ -630,13 +663,13 @@ onBeforeUnmount(() => {
             Скачать эфир
           </a>
           <button
-            v-if="canManageWorkouts && workout.content_type === 'live'"
+            v-if="(isExpertSection && canManageExpertLives) || (!isExpertSection && canManageWorkouts && workout.content_type === 'live')"
             class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/35 bg-primary/10 px-5 py-3 text-sm font-extrabold text-primary transition hover:bg-primary/20"
             type="button"
             @click="openEditModal(workout)"
           >
             <span class="material-symbols-outlined text-[20px]">edit</span>
-            Редактировать запись эфира
+            {{ isExpertSection ? 'Редактировать эфир' : 'Редактировать запись эфира' }}
           </button>
           <button
             v-if="isAdmin"

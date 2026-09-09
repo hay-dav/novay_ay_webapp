@@ -77,6 +77,7 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/workouts', [WorkoutController::class, 'index']);
         Route::get('/workouts/summary', [WorkoutController::class, 'summary']);
         Route::post('/workouts', [WorkoutController::class, 'store']);
+        Route::patch('/workouts/expert-order', [WorkoutController::class, 'reorderExpertLives']);
         Route::patch('/workouts/{workout}', [WorkoutController::class, 'update']);
         Route::delete('/workouts/{workout}', [WorkoutController::class, 'destroy']);
         Route::post('/workouts/{workout}/complete', [WorkoutController::class, 'complete']);
@@ -102,6 +103,7 @@ Route::prefix('v1')->group(function (): void {
         Route::patch('/notification-preferences/chat', [PushSubscriptionController::class, 'updateChatPreference']);
         Route::get('/chat/messages', [ChatController::class, 'index']);
         Route::post('/chat/messages', [ChatController::class, 'store']);
+        Route::post('/chat/broadcast', [ChatController::class, 'broadcast']);
         Route::patch('/chat/messages/{chatMessage}', [ChatController::class, 'update']);
         Route::delete('/chat/messages/{chatMessage}', [ChatController::class, 'destroy']);
         Route::post('/chat/messages/{chatMessage}/reactions', [ChatController::class, 'toggleReaction']);
@@ -131,6 +133,7 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/admin/notifications', [AdminDashboardController::class, 'sendNotification']);
         Route::get('/admin/access-management', [AccessManagementController::class, 'index']);
         Route::post('/admin/access-management/grant', [AccessManagementController::class, 'grant']);
+        Route::patch('/admin/access-management/active/{accessPeriod}', [AccessManagementController::class, 'updateActive']);
         Route::delete('/admin/access-management/scheduled', [AccessManagementController::class, 'cancelScheduled']);
     });
 });

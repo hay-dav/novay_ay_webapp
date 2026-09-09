@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Services\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class ChatController extends Controller
@@ -60,8 +61,6 @@ class ChatController extends Controller
 
     public function important(Request $request)
     {
-        if (! $this->canUseRoomChats($request->user())) return response()->json(['data' => null]);
-
         return $this->roomOverview($request, $this->importantRoom());
     }
 
@@ -87,8 +86,6 @@ class ChatController extends Controller
 
     public function importantMessages(Request $request)
     {
-        abort_unless($this->canUseRoomChats($request->user()), 403);
-
         return $this->roomMessages($request, $this->importantRoom());
     }
 
@@ -125,10 +122,12 @@ class ChatController extends Controller
     {
         $user = $request->user();
         $directUnread = ChatMessage::query()->whereNull('chat_room_id')->where('recipient_id', $user->id)->whereNull('read_at')->count();
-        $roomUnread = $this->canUseRoomChats($user) ? collect([$this->generalRoom(), $this->importantRoom()])->sum(function (ChatRoom $room) use ($user): int {
+        $rooms = collect([$this->importantRoom()]);
+        if ($this->canUseRoomChats($user)) $rooms->prepend($this->generalRoom());
+        $roomUnread = $rooms->sum(function (ChatRoom $room) use ($user): int {
             $lastReadId = ChatRoomRead::query()->where('chat_room_id', $room->id)->where('user_id', $user->id)->value('last_read_message_id') ?? 0;
             return $room->messages()->where('id', '>', $lastReadId)->where('sender_id', '!=', $user->id)->count();
-        }) : 0;
+        });
 
         return response()->json(['data' => ['count' => $directUnread + $roomUnread]]);
     }
@@ -174,13 +173,13 @@ class ChatController extends Controller
         elseif ($request->hasFile('voice')) { $attachmentPath = $media->storeOptimized($request->file('voice'), 'chat/voice', 'audio'); $attachmentType = 'voice'; }
 
         if (filled($validated['room_slug'] ?? null)) {
-            abort_unless($this->canUseRoomChats($request->user()), 403);
             $room = ($validated['room_slug'] ?? null) === 'important-info' ? $this->importantRoom() : $this->generalRoom();
+            abort_unless($room->slug === 'important-info' || $this->canUseRoomChats($request->user()), 403);
             abort_if($room->slug === 'important-info' && $request->user()->role->value !== 'admin', 403, 'Только администратор может публиковать важную информацию.');
             $message = ChatMessage::query()->create(['chat_room_id' => $room->id, 'reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
             $senderName = $request->user()->name;
             User::query()->where('id', '!=', $request->user()->id)->whereNull('blocked_at')->whereNull('archived_at')
-                ->where(fn ($query) => $query->where('role', '!=', 'client')->orWhereNull('staff_status')->orWhereNotIn('staff_status', ['newcomer', 'dropped_out']))
+                ->when($room->slug !== 'important-info', fn ($query) => $query->where(fn ($members) => $members->where('role', '!=', 'client')->orWhereNull('staff_status')->orWhereNotIn('staff_status', ['newcomer', 'dropped_out'])))
                 ->eachById(function (User $recipient) use ($message, $senderName, $attachmentType, $room): void {
                 Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => $room->name.': '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'room_slug' => $room->slug, 'chat_notification_key' => 'room:'.$room->slug]]);
             });
@@ -193,6 +192,53 @@ class ChatController extends Controller
         }
         $message->load($this->messageRelations());
         return response()->json(['data' => $this->decorateMessage($message)], 201);
+    }
+
+    public function broadcast(Request $request)
+    {
+        abort_unless($this->canBroadcast($request->user()), 403);
+
+        $data = $request->validate([
+            'recipient_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'recipient_ids.*' => ['required', 'integer', 'distinct', 'exists:users,id'],
+            'body' => ['required', 'string', 'max:2000'],
+        ]);
+
+        $recipientIds = collect($data['recipient_ids'])->map(fn ($id) => (int) $id)->unique()->values();
+        $recipients = User::query()
+            ->whereIn('id', $recipientIds)
+            ->where('role', 'client')
+            ->whereNull('blocked_at')
+            ->whereNull('archived_at')
+            ->get(['id']);
+
+        abort_unless($recipients->count() === $recipientIds->count(), 422, 'В списке есть недоступные получатели.');
+
+        $sender = $request->user();
+        $senderName = $this->isChatCurator($sender) ? 'Куратор' : $sender->name;
+        DB::transaction(function () use ($recipients, $sender, $senderName, $data): void {
+            foreach ($recipients as $recipient) {
+                $message = ChatMessage::query()->create([
+                    'sender_id' => $sender->id,
+                    'recipient_id' => $recipient->id,
+                    'body' => $data['body'],
+                ]);
+
+                Notification::query()->create([
+                    'user_id' => $recipient->id,
+                    'type' => 'chat',
+                    'title' => 'Новое сообщение от '.$senderName,
+                    'body' => $message->body,
+                    'data' => [
+                        'chat_message_id' => $message->id,
+                        'sender_id' => $sender->id,
+                        'chat_notification_key' => 'direct:'.$sender->id,
+                    ],
+                ]);
+            }
+        });
+
+        return response()->json(['data' => ['recipients_count' => $recipients->count()]], 201);
     }
 
     public function update(Request $request, ChatMessage $chatMessage)
@@ -375,5 +421,10 @@ class ChatController extends Controller
     private function isChatCurator(User $user): bool
     {
         return (int) $user->id === self::CHAT_CURATOR_ID;
+    }
+
+    private function canBroadcast(User $user): bool
+    {
+        return $user->role->value === 'admin' || $this->isChatCurator($user);
     }
 }
