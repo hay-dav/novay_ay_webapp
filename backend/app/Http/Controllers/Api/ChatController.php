@@ -17,6 +17,8 @@ use Illuminate\Support\Facades\Storage;
 class ChatController extends Controller
 {
     private const CHAT_CURATOR_ID = 10;
+    private const CHAT_CARE_ID = 2;
+    private const CHAT_CARE_NAME = 'Служба заботы';
 
     public function peers(Request $request)
     {
@@ -177,7 +179,7 @@ class ChatController extends Controller
             abort_unless($room->slug === 'important-info' || $this->canUseRoomChats($request->user()), 403);
             abort_if($room->slug === 'important-info' && $request->user()->role->value !== 'admin', 403, 'Только администратор может публиковать важную информацию.');
             $message = ChatMessage::query()->create(['chat_room_id' => $room->id, 'reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
-            $senderName = $request->user()->name;
+            $senderName = $this->publicChatName($request->user(), false);
             User::query()->where('id', '!=', $request->user()->id)->whereNull('blocked_at')->whereNull('archived_at')
                 ->when($room->slug !== 'important-info', fn ($query) => $query->where(fn ($members) => $members->where('role', '!=', 'client')->orWhereNull('staff_status')->orWhereNotIn('staff_status', ['newcomer', 'dropped_out'])))
                 ->eachById(function (User $recipient) use ($message, $senderName, $attachmentType, $room): void {
@@ -187,7 +189,7 @@ class ChatController extends Controller
             $recipient = $this->resolvePeer($request, $validated['recipient_id']);
             abort_unless($recipient, 422, 'Выберите собеседника.');
             $message = ChatMessage::query()->create(['reply_to_id' => $validated['reply_to_id'] ?? null, 'sender_id' => $request->user()->id, 'recipient_id' => $recipient->id, 'body' => $validated['body'] ?? '', 'attachment_path' => $attachmentPath, 'attachment_type' => $attachmentType]);
-            $senderName = $this->isChatCurator($request->user()) ? 'Куратор' : $request->user()->name;
+            $senderName = $this->publicChatName($request->user());
             Notification::query()->create(['user_id' => $recipient->id, 'type' => 'chat', 'title' => 'Новое сообщение от '.$senderName, 'body' => $message->body ?: ($attachmentType === 'voice' ? 'Голосовое сообщение' : 'Фото'), 'data' => ['chat_message_id' => $message->id, 'sender_id' => $request->user()->id, 'chat_notification_key' => 'direct:'.$request->user()->id]]);
         }
         $message->load($this->messageRelations());
@@ -215,7 +217,7 @@ class ChatController extends Controller
         abort_unless($recipients->count() === $recipientIds->count(), 422, 'В списке есть недоступные получатели.');
 
         $sender = $request->user();
-        $senderName = $this->isChatCurator($sender) ? 'Куратор' : $sender->name;
+        $senderName = $this->publicChatName($sender);
         DB::transaction(function () use ($recipients, $sender, $senderName, $data): void {
             foreach ($recipients as $recipient) {
                 $message = ChatMessage::query()->create([
@@ -280,9 +282,8 @@ class ChatController extends Controller
             ->whereNull('archived_at')
             ->orderBy('name')
             ->get(['id', 'name', 'avatar_path']);
-        $media = app(MediaStorage::class);
-        $users->each(function (User $user) use ($media): void {
-            if ($user->avatar_path) $user->setAttribute('avatar_path', $media->secureCdnUrl($user->avatar_path));
+        $users->each(function (User $user): void {
+            $this->decorateParticipant($user, false);
         });
 
         return response()->json(['data' => $users]);
@@ -326,9 +327,14 @@ class ChatController extends Controller
         // the agreed public name.
         $admin = User::query()->where('role', 'admin')->orderBy('id')->first(['id', 'name', 'role', 'avatar_path']);
         $curator = User::query()->find(self::CHAT_CURATOR_ID, ['id', 'name', 'role', 'avatar_path']);
-        $team = collect([$admin, $curator])->filter()->unique('id')->values();
-        $team->each(function (User $member) use ($admin, $curator): void {
+        $care = User::query()->find(self::CHAT_CARE_ID, ['id', 'name', 'role', 'avatar_path']);
+        $team = collect([$admin, $curator, $care])->filter()->unique('id')->values();
+        $team->each(function (User $member) use ($admin, $curator, $care): void {
             if ($admin && $member->id === $admin->id) $member->setAttribute('name', 'Лазарева Анастасия');
+            if ($care && $member->id === $care->id) {
+                $member->setAttribute('name', self::CHAT_CARE_NAME);
+                $member->setAttribute('avatar_path', null);
+            }
             if ($curator && $member->id === $curator->id) {
                 $member->setAttribute('name', 'Куратор');
                 $member->setAttribute('avatar_path', null);
@@ -366,6 +372,7 @@ class ChatController extends Controller
         if ($message->attachment_path) $message->setAttribute('attachment_path', app(MediaStorage::class)->secureCdnUrl($message->attachment_path));
         $this->decorateParticipant($message->sender, $message->chat_room_id === null);
         if ($message->replyTo) $this->decorateParticipant($message->replyTo->sender, $message->chat_room_id === null);
+        foreach ($message->reactions as $reaction) $this->decorateParticipant($reaction->user, false);
         return $message;
     }
 
@@ -380,6 +387,10 @@ class ChatController extends Controller
     private function decorateParticipant(?User $participant, bool $isDirectChat): void
     {
         if (! $participant) return;
+        if ((int) $participant->id === self::CHAT_CARE_ID) {
+            $participant->setAttribute('name', self::CHAT_CARE_NAME);
+            $participant->setAttribute('avatar_path', null);
+        }
         if ($isDirectChat && (int) $participant->id === self::CHAT_CURATOR_ID) {
             $participant->setAttribute('name', 'Куратор');
             $participant->setAttribute('avatar_path', null);
@@ -387,6 +398,13 @@ class ChatController extends Controller
             return;
         }
         if ($participant->avatar_path) $participant->setAttribute('avatar_path', app(MediaStorage::class)->secureCdnUrl($participant->avatar_path));
+    }
+
+    private function publicChatName(User $user, bool $isDirectChat = true): string
+    {
+        if ((int) $user->id === self::CHAT_CARE_ID) return self::CHAT_CARE_NAME;
+        if ($isDirectChat && $this->isChatCurator($user)) return 'Куратор';
+        return $user->name;
     }
 
     private function messageRelations(): array
@@ -406,7 +424,7 @@ class ChatController extends Controller
 
     private function isStaff(User $user): bool
     {
-        return in_array($user->role->value, ['curator', 'trainer', 'admin'], true);
+        return in_array($user->role->value, ['curator', 'admin'], true);
     }
 
     private function canUseRoomChats(User $user): bool

@@ -32,9 +32,7 @@ const seenNotificationIds = new Set();
 const failedAvatarUrls = new Set();
 let realtime;
 let profileRefreshTimer;
-// The nutrition module is retained for a future release but is temporarily hidden from clients.
-const nutritionFeatureEnabled = false;
-const defaultAvatar = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=120&q=80';
+const defaultAvatar = '/public-image/default-avatar-v1.svg';
 const mediaUrl = (path) => /^https?:\/\//i.test(path ?? '')
     ? path
     : `${backendOrigin}/${String(path ?? '').replace(/^\/+/, '')}`;
@@ -67,7 +65,7 @@ const greetingName = computed(() => {
     return parts[0] ?? 'Анастасия';
 });
 const navItems = computed(() => {
-    if (auth.isTrainer) {
+    if (auth.isStaff) {
         return [
             { label: 'Уроки', to: '/lessons', icon: 'menu_book' },
             { label: 'Подкасты', to: '/podcasts', icon: 'headphones' },
@@ -86,7 +84,6 @@ const navItems = computed(() => {
         { label: 'Уроки', to: '/lessons', icon: 'menu_book' },
         { label: 'Подкасты', to: '/podcasts', icon: 'headphones' },
         { label: 'Главная', to: '/app', icon: 'home' },
-        { label: 'Питание', to: '/nutrition', icon: 'lunch_dining' },
         { label: 'Тренировки', to: '/workouts', icon: 'exercise' },
         { label: 'Эфиры с экспертами', to: '/expert-lives', icon: 'live_tv' },
         { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
@@ -98,7 +95,7 @@ const navItems = computed(() => {
         { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
     ];
 });
-const visibleNavItems = computed(() => navItems.value.filter((item) => nutritionFeatureEnabled || item.to !== '/nutrition'));
+const visibleNavItems = computed(() => navItems.value);
 const orderedNavItems = computed(() => [...visibleNavItems.value].sort((first, second) => {
     if (first.to === '/app')
         return -1;
@@ -108,8 +105,8 @@ const orderedNavItems = computed(() => [...visibleNavItems.value].sort((first, s
 }));
 const mobileMenuItems = computed(() => {
     const items = visibleNavItems.value.filter((item) => !['/app', '/chat', '/favorites'].includes(item.to));
-    return ['/lessons', '/workouts'].map((path) => items.find((item) => item.to === path)).filter(Boolean)
-        .concat(items.filter((item) => !['/lessons', '/workouts'].includes(item.to)));
+    return ['/lessons', '/podcasts'].map((path) => items.find((item) => item.to === path)).filter(Boolean)
+        .concat(items.filter((item) => !['/lessons', '/podcasts'].includes(item.to)));
 });
 function openChatDirectory() {
     mobileNavigationOpen.value = false;
@@ -431,10 +428,10 @@ onBeforeUnmount(() => {
         <section class="mobile-navigation-sheet brand-scrollbar relative z-10 w-full overflow-y-auto rounded-[28px] border border-white/10 bg-surface-highest p-4 shadow-2xl" role="dialog" aria-modal="true" aria-label="Разделы приложения">
           <div class="mb-3 flex items-center justify-between px-2"><h2 class="text-xl font-extrabold">Меню</h2><button class="grid h-10 w-10 place-items-center rounded-xl text-on-muted hover:bg-white/5" type="button" aria-label="Закрыть меню" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined">close</span></button></div>
           <div class="grid grid-cols-2 gap-3">
-            <RouterLink v-for="item in mobileMenuItems" :key="item.to" :to="item.to" class="flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 bg-surface-container p-4 text-on-surface transition hover:border-primary/35 hover:bg-primary/10" :class="{ 'live-accent-tile': ['/lessons', '/workouts'].includes(item.to) }" active-class="border-primary/50 bg-primary/15 text-primary" @click="mobileNavigationOpen = false">
+            <RouterLink v-for="item in mobileMenuItems" :key="item.to" :to="item.to" class="flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 bg-surface-container p-4 text-on-surface transition hover:border-primary/35 hover:bg-primary/10" :class="{ 'live-accent-tile': ['/lessons', '/podcasts'].includes(item.to), 'knowledge-accent-tile': item.to === '/knowledge-base' }" active-class="border-primary/50 bg-primary/15 text-primary" @click="mobileNavigationOpen = false">
               <span class="material-symbols-outlined text-[28px] text-primary">{{ item.icon }}</span><span class="text-sm font-extrabold leading-5">{{ item.label }}</span>
             </RouterLink>
-            <RouterLink v-if="!auth.isTrainer" to="/favorites" class="live-accent-tile flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 p-4" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined text-[28px]">favorite</span><span class="text-sm font-extrabold leading-5">Избранное</span></RouterLink>
+            <RouterLink v-if="!auth.isStaff" to="/favorites" class="live-accent-tile flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 p-4" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined text-[28px]">favorite</span><span class="text-sm font-extrabold leading-5">Избранное</span></RouterLink>
           </div>
         </section>
         <span class="pointer-events-none absolute -bottom-3 left-1/2 z-20 h-7 w-7 -translate-x-1/2 rotate-45 border-b border-r border-white/10 bg-surface-highest shadow-[8px_8px_18px_rgba(109,56,168,0.18)]" aria-hidden="true" />

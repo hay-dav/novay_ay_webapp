@@ -6,10 +6,7 @@ import PrivacyPolicyView from '@/views/PrivacyPolicyView.vue';
 
 const DashboardView = () => import('@/views/DashboardView.vue');
 const CatalogView = () => import('@/views/CatalogView.vue');
-const CourseView = () => import('@/views/CourseView.vue');
 const ProgressView = () => import('@/views/ProgressView.vue');
-const NutritionView = () => import('@/views/NutritionView.vue');
-const TrainerView = () => import('@/views/TrainerView.vue');
 const WorkoutsView = () => import('@/views/WorkoutsView.vue');
 const ExpertLivesView = () => import('@/views/ExpertLivesView.vue');
 const ChatView = () => import('@/views/ChatView.vue');
@@ -20,8 +17,6 @@ const PodcastsView = () => import('@/views/PodcastsView.vue');
 const AccessManagementView = () => import('@/views/AccessManagementView.vue');
 const TariffsView = () => import('@/views/TariffsView.vue');
 const GuestLiveView = () => import('@/views/GuestLiveView.vue');
-// Keep the nutrition module in place for a future release.
-const nutritionFeatureEnabled = false;
 const router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -31,10 +26,9 @@ const router = createRouter({
         { path: '/live/:token', name: 'guest-live', component: GuestLiveView },
         { path: '/app', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
         { path: '/catalog', name: 'catalog', component: CatalogView, meta: { requiresAuth: true } },
-        { path: '/courses/:slug', name: 'course', component: CourseView, meta: { requiresAuth: true } },
+        { path: '/courses/:slug', name: 'course', redirect: '/catalog', meta: { requiresAuth: true } },
         { path: '/progress', name: 'progress', component: ProgressView, meta: { requiresAuth: true } },
         { path: '/tariffs', name: 'tariffs', component: TariffsView, meta: { requiresAuth: true, clientOnly: true } },
-        { path: '/nutrition', name: 'nutrition', component: NutritionView, meta: { requiresAuth: true, nutritionFeature: true } },
         { path: '/favorites', name: 'favorites', component: WorkoutsView, props: { section: 'workouts', favoritesOnly: true }, meta: { requiresAuth: true, clientOnly: true } },
         { path: '/workouts', name: 'workouts', component: WorkoutsView, props: { section: 'workouts' }, meta: { requiresAuth: true } },
         { path: '/expert-lives', name: 'expert-lives', component: ExpertLivesView, meta: { requiresAuth: true } },
@@ -44,9 +38,8 @@ const router = createRouter({
         { path: '/knowledge-base', name: 'knowledge-base', component: ArticleLessonsView, props: { section: 'knowledge' }, meta: { requiresAuth: true } },
         { path: '/podcasts', name: 'podcasts', component: PodcastsView, meta: { requiresAuth: true } },
         { path: '/chat', name: 'chat', component: ChatView, meta: { requiresAuth: true } },
-        { path: '/participants', name: 'participants', component: ParticipantsView, meta: { requiresAuth: true, trainerOnly: true } },
+        { path: '/participants', name: 'participants', component: ParticipantsView, meta: { requiresAuth: true, staffOnly: true } },
         { path: '/access-management', name: 'access-management', component: AccessManagementView, meta: { requiresAuth: true, accessManagerOnly: true } },
-        { path: '/trainer', name: 'trainer', component: TrainerView, meta: { requiresAuth: true, trainerOnly: true } },
         { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAuth: true, adminOnly: true } },
     ],
 });
@@ -58,18 +51,15 @@ router.beforeEach(async (to) => {
     if (to.meta.requiresAuth && !auth.user) {
         return { name: 'login' };
     }
-    if (to.meta.nutritionFeature && !nutritionFeatureEnabled) {
-        return { name: 'dashboard' };
-    }
     // A saved token is restored above, so an already signed-in user never sees
     // the login form when opening the personal account again.
     if (to.name === 'login' && auth.user) {
         return { name: 'dashboard' };
     }
-    if (to.meta.trainerOnly && !auth.isTrainer) {
+    if (to.meta.staffOnly && !auth.isStaff) {
         return { name: 'dashboard' };
     }
-    if (to.meta.clientOnly && auth.isTrainer) {
+    if (to.meta.clientOnly && auth.isStaff) {
         return { name: 'dashboard' };
     }
     if (to.meta.adminOnly && !auth.isAdmin) {

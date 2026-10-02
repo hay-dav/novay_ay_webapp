@@ -372,9 +372,13 @@
 }
 
 
+:root {
+    --highlighted-tile-background: linear-gradient(110deg, #f4d8ef 0%, #e8b9e9 60%, #d6a6f0 100%);
+}
+
 /* Shared live invitation and highlighted mobile navigation. */
 .live-join-banner, .live-accent-tile {
-    background: linear-gradient(110deg, #f4d8ef 0%, #e8b9e9 60%, #d6a6f0 100%);
+    background: var(--highlighted-tile-background);
     color: #40133f;
 }
 .live-accent-tile .material-symbols-outlined { color: #79266f; }
@@ -394,4 +398,19 @@
     .live-join-icon { width: 2.75rem; height: 2.75rem; font-size: 2rem; }
     .live-join-copy > span:last-child { font-size: .8rem; }
     .live-join-action { width: 100%; min-height: 44px; padding: .75rem; }
+}
+
+.knowledge-accent-tile { border: 2px solid #d6a6f0; }
+.content-text-link { color: var(--color-primary); text-decoration: underline; text-underline-offset: .18em; overflow-wrap: anywhere; }
+.content-text-link:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; border-radius: 2px; }
+.workout-completion .text-primary { color: #79266f; }
+.workout-completion .text-on-muted, .workout-completion .text-on-surface { color: #40133f; }
+.news-card-row { display: flex; align-items: flex-start; gap: 1rem; padding: 1.25rem; }
+.news-card-row > img { width: 5rem; height: 5rem; flex-shrink: 0; border-radius: .75rem; object-fit: cover; }
+.news-card-row > div { min-width: 0; flex: 1; padding: 0; }
+.news-card-row h3 { overflow-wrap: anywhere; }
+@media (max-width: 639px) {
+    .news-card-row { gap: .75rem; padding: 1rem; }
+    .news-card-row > img { width: 4.5rem; height: 4.5rem; }
+    .news-card-row h3 { font-size: 1rem; line-height: 1.5; }
 }

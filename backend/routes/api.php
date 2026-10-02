@@ -18,7 +18,6 @@ use App\Http\Controllers\Api\PushSubscriptionController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\PodcastController;
 use App\Http\Controllers\Api\RecipeController;
-use App\Http\Controllers\Api\TrainerDashboardController;
 use App\Http\Controllers\Api\WorkoutController;
 use Illuminate\Support\Facades\Route;
 
@@ -123,9 +122,9 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/access-requests', [AccessRequestController::class, 'store']);
         Route::patch('/access-requests/{accessRequest}/approve', [AccessRequestController::class, 'approve']);
 
-        Route::get('/trainer/dashboard', TrainerDashboardController::class);
-        Route::post('/trainer/courses', [CourseController::class, 'store']);
-        Route::post('/trainer/clients/{client}/nutrition-plans', [NutritionPlanController::class, 'storeForClient']);
+        Route::get('/staff/dashboard', [AdminDashboardController::class, 'overview']);
+        Route::post('/staff/courses', [CourseController::class, 'store']);
+        Route::post('/admin/clients/{client}/nutrition-plans', [NutritionPlanController::class, 'storeForClient']);
         Route::get('/admin/dashboard', [AdminDashboardController::class, 'index']);
         Route::patch('/admin/users/{user}', [AdminDashboardController::class, 'updateUser']);
         Route::delete('/admin/users/{user}', [AdminDashboardController::class, 'destroyUser']);

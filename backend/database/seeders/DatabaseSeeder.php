@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\TrainerProfile;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
@@ -50,7 +49,6 @@ class DatabaseSeeder extends Seeder
                 ],
             );
 
-            TrainerProfile::query()->firstOrCreate(['user_id' => $user->id]);
         }
     }
 }

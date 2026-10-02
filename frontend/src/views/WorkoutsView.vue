@@ -1,4 +1,7 @@
 <script setup>
+import PaidMaterialsNotice from '@/components/PaidMaterialsNotice.vue';
+import { usePaidMaterialAccess } from '@/composables/usePaidMaterialAccess';
+import LinkedText from '@/components/LinkedText.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
@@ -8,6 +11,7 @@ import VideoWatermark from '@/components/VideoWatermark.vue';
 const props = defineProps({ section: { type: String, default: 'workouts' }, favoritesOnly: Boolean, liveOnly: Boolean, initialStream: Object });
 const emit = defineEmits(['live-closed', 'live-failed']);
 const auth = useAuthStore();
+const { requiresPaidAccess } = usePaidMaterialAccess();
 const {
     activeStream,
     isHosting,
@@ -69,6 +73,7 @@ const workoutsLoading = ref(true);
 const activeFilter = ref('all');
 const searchQuery = ref('');
 const completed = ref({});
+const completedWorkoutsCount = ref(0);
 const showCreateModal = ref(false);
 const showLiveStartModal = ref(false);
 const saving = ref(false);
@@ -101,7 +106,7 @@ const form = ref({
     access_level: 'paid',
 });
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
-const canManageWorkouts = computed(() => ['admin', 'curator', 'trainer'].includes(auth.user?.role ?? ''));
+const canManageWorkouts = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const canManageExpertLives = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const canDownloadLiveRecordings = computed(() => ['admin', 'curator'].includes(auth.user?.role ?? ''));
 const isAdmin = computed(() => auth.user?.role === 'admin');
@@ -142,8 +147,12 @@ const sectionEmptyMessage = computed(() => props.favoritesOnly ? 'Нажмите
 async function load() {
     workoutsLoading.value = true;
     try {
-        const { data } = await api.get('/workouts', { params: { section: props.section } });
-        workouts.value = data.data;
+        const [workoutsResponse, summaryResponse] = await Promise.all([
+            api.get('/workouts', { params: { section: props.section, favorites: props.favoritesOnly || undefined } }),
+            props.section === 'workouts' ? api.get('/workouts/summary').catch(() => ({ data: { data: { completed_workouts_count: 0 } } })) : Promise.resolve({ data: { data: { completed_workouts_count: 0 } } }),
+        ]);
+        workouts.value = workoutsResponse.data.data;
+        completedWorkoutsCount.value = Number(summaryResponse.data.data?.completed_workouts_count ?? 0);
         completed.value = Object.fromEntries(workouts.value
             .filter((workout) => workout.is_completed)
             .map((workout) => [workout.id, true]));
@@ -154,6 +163,7 @@ async function load() {
 }
 async function complete(workout) {
     await api.post(`/workouts/${workout.id}/complete`);
+    if (!completed.value[workout.id]) completedWorkoutsCount.value += 1;
     completed.value[workout.id] = true;
 }
 function openModal() {
@@ -227,7 +237,7 @@ async function createWorkout() {
     payload.append('video', form.value.video);
     payload.append('access_level', form.value.access_level);
     payload.append('section', props.section);
-    if (form.value.cover)
+    if (isExpertSection.value && form.value.cover)
         payload.append('cover', form.value.cover);
     try {
         const { data } = await api.post('/workouts', payload, {
@@ -533,7 +543,7 @@ onBeforeUnmount(() => {
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">{{ isExpertSection ? 'Экспертные встречи' : 'Тренировки' }}</p>
         <h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ props.favoritesOnly ? 'Избранное' : isExpertSection ? 'Эфиры с экспертами' : 'Видео-тренировки' }}</h2>
       </div>
-      <div class="flex flex-col gap-3 sm:flex-row">
+      <div v-if="canManageWorkouts || canManageExpertLives" class="flex flex-col gap-3 sm:flex-row">
         <button
           v-if="isAdmin && !isHosting"
           class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-red-400/30 bg-red-500/15 px-5 py-3 text-sm font-extrabold text-red-200"
@@ -572,7 +582,14 @@ onBeforeUnmount(() => {
           Добавить эфир
         </button>
       </div>
+
     </div>
+
+      <div v-if="auth.user?.role === 'client' && !isExpertSection && !props.favoritesOnly" class="workout-completion live-accent-tile flex items-center gap-3 rounded-2xl border border-white/10 px-4 py-3 text-sm">
+        <span class="material-symbols-outlined text-primary">check_circle</span>
+        <span class="text-on-muted">Пройдено тренировок</span>
+        <strong class="ml-auto text-xl text-on-surface">{{ completedWorkoutsCount }}</strong>
+      </div>
 
     <button v-if="canWatchLive && activeStream && !props.favoritesOnly" type="button" class="live-join-banner" :disabled="liveLoading" @click="openLiveBroadcast">
       <span class="live-join-icon material-symbols-outlined" aria-hidden="true">sensors</span>
@@ -609,8 +626,9 @@ onBeforeUnmount(() => {
 
     <p v-if="favoriteError" class="rounded-xl bg-red-500/10 p-3 text-sm text-red-200" role="alert">{{ favoriteError }}</p>
     <p v-if="orderingError" class="rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200" role="alert">{{ orderingError }}</p>
+    <PaidMaterialsNotice v-if="requiresPaidAccess && !workoutsLoading" />
     <ContentLoadingState v-if="workoutsLoading" :label="isExpertSection ? 'Загружаем эфиры…' : 'Загружаем тренировки…'" />
-    <div v-else-if="filteredWorkouts.length" class="grid gap-5 lg:grid-cols-2">
+    <div v-else-if="filteredWorkouts.length" class="grid gap-6 lg:grid-cols-2">
       <article v-for="workout in filteredWorkouts" :key="workout.id" class="glass-panel relative overflow-hidden rounded-[28px]">
         <div v-if="isExpertSection && canManageExpertLives && !searchQuery.trim()" class="absolute right-3 top-3 z-20 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || workoutIndex(workout) === 0" :aria-label="`Переместить эфир «${workout.title}» выше`" @click.stop="moveExpertLife(workout, -1)"><span class="material-symbols-outlined text-[20px]">arrow_upward</span></button>
@@ -663,7 +681,7 @@ onBeforeUnmount(() => {
               <span class="material-symbols-outlined">{{ isExpertSection ? 'record_voice_over' : 'exercise' }}</span>
             </div>
           </div>
-          <p class="mt-3 text-sm leading-6 text-on-muted">{{ workout.description }}</p>
+          <LinkedText as="p" class="mt-3 whitespace-pre-wrap text-sm leading-6 text-on-muted" :text="workout.description" />
           <button v-if="auth.user?.role === 'client' && !isExpertSection" type="button" class="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary/35 px-3 py-2 text-sm font-bold text-primary disabled:opacity-50" :class="{ 'bg-primary/15': workout.is_favorite }" :disabled="favoriteSaving.has(workout.id)" :aria-pressed="Boolean(workout.is_favorite)" @click="toggleFavorite(workout)"><span class="material-symbols-outlined" aria-hidden="true">{{ workout.is_favorite ? 'favorite' : 'favorite_border' }}</span>{{ favoriteSaving.has(workout.id) ? 'Сохраняем…' : workout.is_favorite ? 'Убрать из избранного' : 'В избранное' }}</button>
           <button
             v-if="!canManageWorkouts && !isExpertSection"
@@ -706,7 +724,7 @@ onBeforeUnmount(() => {
       </article>
     </div>
 
-    <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center">
+    <div v-else-if="!requiresPaidAccess" class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center">
       <div>
         <span class="material-symbols-outlined text-[52px] text-primary">{{ isExpertSection ? 'live_tv' : activeFilter === 'podcast' ? 'headphones' : activeFilter === 'live' ? 'live_tv' : 'fitness_center' }}</span>
         <h3 class="mt-3 text-xl font-extrabold">{{ props.favoritesOnly ? 'В избранном пока нет тренировок' : isExpertSection ? 'Эфиров с экспертами пока нет' : activeFilter === 'podcast' ? 'Подкастов пока нет' : activeFilter === 'live' ? 'Записей эфиров пока нет' : 'Видео-тренировок пока нет' }}</h3>
@@ -1053,7 +1071,7 @@ onBeforeUnmount(() => {
             </fieldset>
 
             <div class="grid gap-4 sm:grid-cols-2">
-              <label class="grid cursor-pointer gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/50">
+              <label v-if="isExpertSection" class="grid cursor-pointer gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/50">
                 <span class="flex items-center gap-3 text-sm font-bold text-on-surface">
                   <span class="material-symbols-outlined text-primary">add_photo_alternate</span>
                   Добавить обложку
@@ -1063,6 +1081,11 @@ onBeforeUnmount(() => {
                 <span class="truncate text-xs font-medium text-primary">{{ form.cover?.name ?? 'Выбрать с устройства' }}</span>
                 <input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="selectCover" />
               </label>
+              <div v-else class="grid content-start gap-3 rounded-2xl border border-white/15 bg-surface-low p-4">
+                <span class="text-sm font-bold text-on-surface">Обложка видео-тренировки</span>
+                <img class="aspect-video w-full rounded-xl object-cover" src="/public-image/video-workout-cover-v1.png" alt="Видео-тренировка" />
+                <span class="text-xs text-on-muted">Добавляется автоматически</span>
+              </div>
 
               <label class="grid cursor-pointer content-start gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/50">
                 <span class="flex items-center gap-3 text-sm font-bold text-on-surface">

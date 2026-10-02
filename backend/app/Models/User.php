@@ -83,11 +83,6 @@ class User extends Authenticatable
         $this->attributes['phone_hash'] = self::lookupHash($value);
     }
 
-    public function trainerProfile()
-    {
-        return $this->hasOne(TrainerProfile::class);
-    }
-
     public function clientProfile()
     {
         return $this->hasOne(ClientProfile::class);

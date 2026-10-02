@@ -20,6 +20,9 @@ backend/bootstrap/cache/*.php
 *.bak
 .composer-tmp/
 .composer-audit/
+.deploy-backups/
+*.bak-*
+/=
 backend/.env.production
 frontend/.env.production
 .env.production

@@ -19,9 +19,67 @@ use Illuminate\Support\Carbon;
 
 class AdminDashboardController extends Controller
 {
+    public function overview(Request $request)
+    {
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
+
+        $clientProfiles = \App\Models\ClientProfile::query()
+            ->with('user')
+            ->latest('client_profiles.created_at')
+            ->get();
+
+        $courseIds = \App\Models\Course::query()
+            ->pluck('id');
+
+        $latestMeasurements = \App\Models\ProgressEntry::query()
+            ->whereIn('user_id', $clientProfiles->pluck('user_id'))
+            ->orderByDesc('measured_on')
+            ->orderByDesc('id')
+            ->get(['id', 'user_id', 'weight_kg', 'waist_cm', 'hips_cm', 'chest_cm', 'mood', 'comment', 'measured_on'])
+            ->unique('user_id')
+            ->keyBy('user_id');
+
+        $reportQueue = $clientProfiles
+            ->map(function (\App\Models\ClientProfile $profile) use ($latestMeasurements): ?array {
+                $measurement = $latestMeasurements->get($profile->user_id);
+                if (! $measurement) {
+                    return null;
+                }
+
+                return [
+                    'client_id' => $profile->user_id,
+                    'client_name' => $profile->user?->name,
+                    'measured_on' => $measurement->measured_on,
+                    'weight_kg' => $measurement->weight_kg,
+                    'waist_cm' => $measurement->waist_cm,
+                    'mood' => $measurement->mood,
+                    'comment' => $measurement->comment,
+                ];
+            })
+            ->filter()
+            ->sortByDesc('measured_on')
+            ->values()
+            ->take(10);
+
+        return response()->json([
+            'data' => [
+                'clients' => $clientProfiles->count(),
+                'revenue_cents' => \App\Models\Purchase::query()->whereIn('course_id', $courseIds)->where('status', 'paid')->sum('amount_cents'),
+                'active_courses' => $courseIds->count(),
+                'pending_reviews' => $reportQueue->count(),
+                'clients_list' => $clientProfiles->map(fn (\App\Models\ClientProfile $profile) => [
+                    'id' => $profile->user_id,
+                    'name' => $profile->user?->name,
+                    'goal' => $profile->goal,
+                ])->values(),
+                'report_queue' => $reportQueue,
+            ],
+        ]);
+    }
+
     public function index(Request $request, MediaStorage $media)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
 
         $clientsQuery = User::query()
             ->where('role', 'client')
@@ -130,7 +188,7 @@ class AdminDashboardController extends Controller
 
     public function updateUser(Request $request, User $user, AccessPeriodService $periods)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
         $this->assertCanAccessClient($request, $user);
 
         if ($request->has('staff_status')) {
@@ -171,7 +229,7 @@ class AdminDashboardController extends Controller
 
     public function sendNotification(Request $request)
     {
-        abort_unless(in_array($request->user()->role->value, ['trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['admin'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -210,7 +268,7 @@ class AdminDashboardController extends Controller
 
     public function clientDetails(Request $request, User $user)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
         abort_unless($user->role->value === 'client', 404);
         $this->assertCanAccessClient($request, $user);
 
@@ -249,7 +307,7 @@ class AdminDashboardController extends Controller
 
     public function storeClientComment(Request $request, User $user)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
         abort_unless($user->role->value === 'client', 404);
         $this->assertCanAccessClient($request, $user);
         $validated = $request->validate(['body' => ['required', 'string', 'max:3000']]);

@@ -1,10 +1,13 @@
 <script setup>
+import PaidMaterialsNotice from '@/components/PaidMaterialsNotice.vue';
+import { usePaidMaterialAccess } from '@/composables/usePaidMaterialAccess';
 import { onMounted, ref } from 'vue';
 import { useCatalogStore } from '@/stores/catalog';
 import { useAuthStore } from '@/stores/auth';
 import CourseCard from '@/components/CourseCard.vue';
 const catalog = useCatalogStore();
 const auth = useAuthStore();
+const { requiresPaidAccess } = usePaidMaterialAccess();
 const filters = ['Все', 'Тренировки', 'Питание', 'Подкасты', 'Эфиры'];
 const showMaterialModal = ref(false);
 const material = ref({
@@ -45,7 +48,7 @@ async function createMaterial() {
 
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
         <button
-          v-if="auth.isTrainer"
+          v-if="auth.isStaff"
           class="rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-4 text-sm font-extrabold text-white"
           type="button"
           @click="showMaterialModal = true"
@@ -77,6 +80,8 @@ async function createMaterial() {
         {{ filter }}
       </button>
     </div>
+
+    <PaidMaterialsNotice v-if="requiresPaidAccess && !catalog.loading" class="mb-6" />
 
     <div v-if="catalog.materials.length" class="mb-8">
       <div class="mb-4 flex items-center justify-between">

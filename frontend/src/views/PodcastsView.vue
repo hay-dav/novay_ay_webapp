@@ -1,10 +1,13 @@
 <script setup>
+import PaidMaterialsNotice from '@/components/PaidMaterialsNotice.vue';
+import { usePaidMaterialAccess } from '@/composables/usePaidMaterialAccess';
 import { computed, onMounted, ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/services/api';
 import ContentLoadingState from '@/components/ContentLoadingState.vue';
 
 const auth = useAuthStore();
+const { requiresPaidAccess } = usePaidMaterialAccess();
 const podcasts = ref([]);
 const podcastsLoading = ref(true);
 const searchQuery = ref('');
@@ -174,6 +177,7 @@ onMounted(load);
       <button v-if="searchQuery" class="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-xl text-on-muted transition hover:bg-white/5 hover:text-on-surface" type="button" aria-label="Очистить поиск" @click="searchQuery = ''"><span class="material-symbols-outlined text-[19px]">close</span></button>
     </label>
 
+    <PaidMaterialsNotice v-if="requiresPaidAccess && !podcastsLoading" />
     <ContentLoadingState v-if="podcastsLoading" label="Загружаем подкасты…" />
     <div v-else-if="filteredPodcasts.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
       <article v-for="podcast in filteredPodcasts" :key="podcast.id" class="glass-panel overflow-hidden rounded-[28px]">
@@ -183,7 +187,7 @@ onMounted(load);
       </article>
     </div>
     <div v-else-if="podcasts.length && searchQuery.trim()" class="glass-panel grid min-h-52 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">search_off</span><h3 class="mt-3 text-xl font-extrabold">Подкасты не найдены</h3><p class="mt-2 text-sm text-on-muted">Попробуйте изменить запрос или очистить поиск.</p></div></div>
-    <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">headphones</span><h3 class="mt-3 text-xl font-extrabold">Подкастов пока нет</h3><p class="mt-2 text-sm text-on-muted">Новые выпуски появятся здесь.</p></div></div>
+    <div v-else-if="!requiresPaidAccess" class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">headphones</span><h3 class="mt-3 text-xl font-extrabold">Подкастов пока нет</h3><p class="mt-2 text-sm text-on-muted">Новые выпуски появятся здесь.</p></div></div>
 
     <Teleport to="body">
       <div v-if="showCreateModal" class="app-modal-backdrop z-[120] bg-black/70 backdrop-blur-sm" @mousedown.self="closeModal">

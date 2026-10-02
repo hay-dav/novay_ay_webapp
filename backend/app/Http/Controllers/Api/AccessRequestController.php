@@ -10,7 +10,7 @@ class AccessRequestController extends Controller
 {
     public function index(Request $request)
     {
-        abort_unless(in_array($request->user()->role->value, ['admin', 'trainer'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['admin'], true), 403);
 
         return response()->json([
             'data' => AccessRequest::query()->with('user:id,name,email,phone,access_status')->latest()->get(),
@@ -35,7 +35,7 @@ class AccessRequestController extends Controller
 
     public function approve(Request $request, AccessRequest $accessRequest)
     {
-        abort_unless(in_array($request->user()->role->value, ['admin', 'trainer'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['admin'], true), 403);
 
         $validated = $request->validate([
             'status' => ['required', 'in:approved,rejected'],

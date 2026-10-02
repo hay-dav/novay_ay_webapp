@@ -1,12 +1,16 @@
 <script setup>
+import PaidMaterialsNotice from '@/components/PaidMaterialsNotice.vue';
+import { usePaidMaterialAccess } from '@/composables/usePaidMaterialAccess';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/services/api';
+import LinkedText from '@/components/LinkedText.vue';
 import VideoWatermark from '@/components/VideoWatermark.vue';
 import ContentLoadingState from '@/components/ContentLoadingState.vue';
 
 const auth = useAuthStore();
+const { requiresPaidAccess } = usePaidMaterialAccess();
 const route = useRoute();
 const props = defineProps({ section: { type: String, default: 'lessons' } });
 const sectionCopy = computed(() => ({
@@ -275,30 +279,31 @@ onBeforeUnmount(() => {
 
     <p v-if="orderingError" class="rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200" role="alert">{{ orderingError }}</p>
 
+    <PaidMaterialsNotice v-if="requiresPaidAccess && props.section !== 'news' && !lessonsLoading" />
     <ContentLoadingState v-if="lessonsLoading" :label="`Загружаем: ${sectionCopy.title.toLocaleLowerCase('ru-RU')}…`" />
     <div v-else-if="filteredLessons.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-      <article v-for="(lesson, index) in filteredLessons" :key="lesson.id" class="glass-panel group relative overflow-hidden rounded-[28px] transition hover:-translate-y-1 hover:border-primary/35 focus-within:ring-2 focus-within:ring-primary">
+      <article v-for="(lesson, index) in filteredLessons" :key="lesson.id"  class="glass-panel group relative overflow-hidden rounded-[28px] transition hover:-translate-y-1 hover:border-primary/35 focus-within:ring-2 focus-within:ring-primary">
         <div v-if="canCreateLessons && props.section !== 'news' && !searchQuery.trim()" class="absolute right-3 top-3 z-10 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || index === 0" :aria-label="`Переместить урок «${lesson.title}» выше`" @click.stop="moveLesson(lesson, -1)"><span class="material-symbols-outlined text-[20px]">arrow_upward</span></button>
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || index === filteredLessons.length - 1" :aria-label="`Переместить урок «${lesson.title}» ниже`" @click.stop="moveLesson(lesson, 1)"><span class="material-symbols-outlined text-[20px]">arrow_downward</span></button>
         </div>
-        <button class="block w-full text-left focus:outline-none" type="button" @click="selectedLesson = lesson">
-          <img v-if="lesson.preview_image_path" class="aspect-[16/9] w-full object-cover" :src="lesson.preview_image_path" :alt="lesson.title" />
-          <div v-else class="grid aspect-[16/9] place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-5xl">article</span></div>
-          <div class="p-5"><h3 class="line-clamp-2 text-xl font-extrabold leading-7">{{ lesson.title }}</h3><p class="mt-3 line-clamp-3 text-sm leading-6 text-on-muted">{{ lesson.excerpt }}</p><span class="mt-5 inline-flex items-center gap-2 text-sm font-extrabold text-primary">Открыть <span class="material-symbols-outlined text-[18px] transition group-hover:translate-x-1">arrow_forward</span></span></div>
+        <button class="block w-full text-left focus:outline-none" :class="{ 'news-card-row': props.section === 'news' }" type="button" @click="selectedLesson = lesson">
+          <img v-if="props.section === 'news' ? lesson.cover_image_path : lesson.preview_image_path" class="aspect-[16/9] w-full object-cover" :src="props.section === 'news' ? lesson.cover_image_path : lesson.preview_image_path" :alt="lesson.title" />
+          <div v-else-if="props.section !== 'news'" class="grid aspect-[16/9] place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-5xl">article</span></div>
+          <div class="p-5"><h3 class="line-clamp-2 text-xl font-extrabold leading-7">{{ lesson.title }}</h3><p v-if="lesson.excerpt && !['null', 'undefined'].includes(String(lesson.excerpt).trim().toLowerCase())" class="mt-3 line-clamp-3 text-sm leading-6 text-on-muted">{{ lesson.excerpt }}</p><span class="mt-5 inline-flex items-center gap-2 text-sm font-extrabold text-primary">Открыть <span class="material-symbols-outlined text-[18px] transition group-hover:translate-x-1">arrow_forward</span></span></div>
         </button>
       </article>
     </div>
     <div v-else-if="lessons.length && searchQuery.trim()" class="glass-panel grid min-h-52 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">search_off</span><h3 class="mt-3 text-xl font-extrabold">Ничего не найдено</h3><p class="mt-2 text-sm text-on-muted">Попробуйте изменить запрос или очистить поиск.</p></div></div>
-    <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">{{ sectionCopy.icon }}</span><h3 class="mt-3 text-xl font-extrabold">{{ sectionCopy.empty }}</h3><p class="mt-2 text-sm text-on-muted">Новые материалы появятся здесь после публикации.</p></div></div>
+    <div v-else-if="!requiresPaidAccess || props.section === 'news'" class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center"><div><span class="material-symbols-outlined text-[52px] text-primary">{{ sectionCopy.icon }}</span><h3 class="mt-3 text-xl font-extrabold">{{ sectionCopy.empty }}</h3><p class="mt-2 text-sm text-on-muted">Новые материалы появятся здесь после публикации.</p></div></div>
 
     <Teleport to="body">
       <div v-if="selectedLesson" class="app-modal-backdrop z-[110] bg-black/70 backdrop-blur-sm" @mousedown.self="selectedLesson = null">
         <article class="app-modal-panel glass-panel rounded-[28px] p-5 sm:max-w-3xl sm:p-8" role="dialog" aria-modal="true" :aria-label="selectedLesson.title">
           <div class="mb-6 flex items-start justify-between gap-4"><div><p class="text-xs font-bold uppercase tracking-[0.14em] text-primary">{{ sectionCopy.item }}</p><h3 class="mt-2 text-2xl font-extrabold leading-8 sm:text-3xl">{{ selectedLesson.title }}</h3></div><div class="flex shrink-0 gap-2"><button v-if="canCreateLessons" class="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-primary hover:bg-primary/10" type="button" aria-label="Редактировать материал" @click="openEdit(selectedLesson)"><span class="material-symbols-outlined">edit</span></button><button v-if="canCreateLessons" class="grid h-10 w-10 place-items-center rounded-xl border border-red-400/25 text-red-200 hover:bg-red-500/10" type="button" aria-label="Удалить материал" @click="deleteLesson(selectedLesson)"><span class="material-symbols-outlined">delete</span></button><button class="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-on-muted" type="button" aria-label="Закрыть материал" @click="selectedLesson = null"><span class="material-symbols-outlined">close</span></button></div></div>
-          <p class="mb-6 text-base font-semibold leading-7 text-primary/90">{{ selectedLesson.excerpt }}</p>
-          <div v-if="selectedLesson.blocks?.length" class="grid gap-6"><template v-for="block in selectedLesson.blocks" :key="block.id"><div v-if="block.type === 'text'" class="whitespace-pre-wrap text-[15px] leading-7 text-on-surface">{{ block.content }}</div><img v-else-if="block.type === 'image'" class="w-full rounded-2xl object-cover" :src="block.image_path" alt="Иллюстрация к уроку" /><div v-else class="relative mx-auto w-full max-w-4xl overflow-hidden rounded-2xl bg-black"><video class="block h-auto w-full object-contain" :src="block.video_path" controls playsinline controlsList="nodownload noplaybackrate" disablePictureInPicture /><VideoWatermark /></div></template></div>
-          <template v-else><img v-if="selectedLesson.image_path" class="mb-6 aspect-video w-full rounded-2xl object-cover" :src="selectedLesson.image_path" :alt="selectedLesson.title" /><div class="whitespace-pre-wrap text-[15px] leading-7 text-on-surface">{{ selectedLesson.body }}</div></template>
+          <LinkedText v-if="selectedLesson.excerpt" as="p" class="mb-6 text-base font-semibold leading-7 text-primary/90" :text="selectedLesson.excerpt" />
+          <div v-if="selectedLesson.blocks?.length" class="grid gap-6"><template v-for="block in selectedLesson.blocks" :key="block.id"><LinkedText v-if="block.type === 'text'" as="div" class="whitespace-pre-wrap text-[15px] leading-7 text-on-surface" :text="block.content" /><img v-else-if="block.type === 'image'" class="w-full rounded-2xl object-cover" :src="block.image_path" alt="Иллюстрация к уроку" /><div v-else class="relative mx-auto w-full max-w-4xl overflow-hidden rounded-2xl bg-black"><video class="block h-auto w-full object-contain" :src="block.video_path" controls playsinline controlsList="nodownload noplaybackrate" disablePictureInPicture /><VideoWatermark /></div></template></div>
+          <template v-else><img v-if="selectedLesson.image_path" class="mb-6 aspect-video w-full rounded-2xl object-cover" :src="selectedLesson.image_path" :alt="selectedLesson.title" /><LinkedText as="div" class="whitespace-pre-wrap text-[15px] leading-7 text-on-surface" :text="selectedLesson.body" /></template>
         </article>
       </div>
 

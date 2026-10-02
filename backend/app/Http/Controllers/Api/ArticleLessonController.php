@@ -14,7 +14,7 @@ class ArticleLessonController extends Controller
     public function index(Request $request, MediaStorage $media)
     {
         $section = $this->section($request);
-        $isStaff = in_array($request->user()->role->value, ['admin', 'curator', 'trainer'], true);
+        $isStaff = in_array($request->user()->role->value, ['admin', 'curator'], true);
         $isPaid = $isStaff || $request->user()->access_status === 'paid';
 
         $lessons = ArticleLesson::query()

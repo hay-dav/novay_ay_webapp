@@ -22,7 +22,7 @@ class LessonQuestionController extends Controller
 
     public function answer(Request $request, LessonQuestion $question)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
         if ($request->user()->role->value !== 'admin') {
             abort_unless($question->user?->clientProfile?->trainer_id === $request->user()->id, 403);
         }

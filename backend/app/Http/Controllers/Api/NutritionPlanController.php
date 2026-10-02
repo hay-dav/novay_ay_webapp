@@ -22,7 +22,7 @@ class NutritionPlanController extends Controller
 
     public function storeForClient(Request $request, int $client)
     {
-        abort_unless(in_array($request->user()->role->value, ['trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['admin'], true), 403);
         $clientUser = User::query()->whereKey($client)->where('role', 'client')->firstOrFail();
         if ($request->user()->role->value !== 'admin') {
             abort_unless($clientUser->clientProfile?->trainer_id === $request->user()->id, 403);

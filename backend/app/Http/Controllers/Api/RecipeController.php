@@ -21,7 +21,7 @@ class RecipeController extends Controller
 
     public function store(Request $request)
     {
-        abort_unless(in_array($request->user()->role->value, ['admin', 'trainer'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['admin'], true), 403);
 
         $recipe = Recipe::query()->create($request->validate([
             'title' => ['required', 'string', 'max:255'],

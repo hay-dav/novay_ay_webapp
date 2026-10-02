@@ -13,7 +13,7 @@ class PodcastController extends Controller
 {
     public function index(Request $request)
     {
-        $isStaff = in_array($request->user()->role->value, ['admin', 'curator', 'trainer'], true);
+        $isStaff = in_array($request->user()->role->value, ['admin', 'curator'], true);
         $isPaid = $isStaff || $request->user()->access_status === 'paid';
 
         $podcasts = Podcast::query()
@@ -67,7 +67,7 @@ class PodcastController extends Controller
     public function stream(Request $request, Podcast $podcast, MediaStorage $media)
     {
         $user = User::query()->findOrFail($request->integer('user'));
-        $isStaff = in_array($user->role->value, ['admin', 'curator', 'trainer'], true);
+        $isStaff = in_array($user->role->value, ['admin', 'curator'], true);
         abort_if(! $isStaff && $podcast->access_level === 'paid' && $user->access_status !== 'paid', 403);
 
         return redirect()->away($media->secureCdnUrl($podcast->audio_path, 3600));

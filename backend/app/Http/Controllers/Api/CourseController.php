@@ -76,7 +76,7 @@ class CourseController extends Controller
 
     public function store(Request $request)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -100,7 +100,7 @@ class CourseController extends Controller
 
     public function storeMaterial(Request $request, MediaStorage $media)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],

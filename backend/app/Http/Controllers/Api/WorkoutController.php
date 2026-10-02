@@ -21,7 +21,7 @@ class WorkoutController extends Controller
         $section = $request->validate(['section' => ['nullable', 'in:workouts,experts']])['section'] ?? 'workouts';
         $user = $request->user();
         $isPaid = $request->user()->access_status === 'paid'
-            || in_array($request->user()->role->value, ['admin', 'curator', 'trainer'], true);
+            || in_array($request->user()->role->value, ['admin', 'curator'], true);
         $canDownloadLiveRecordings = in_array($request->user()->role->value, ['admin', 'curator'], true);
 
         $favoriteIds = DB::table('workout_favorites')->where('user_id', $user->id)->pluck('workout_id')->flip();
@@ -100,7 +100,7 @@ class WorkoutController extends Controller
 
     public function store(Request $request)
     {
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
@@ -114,7 +114,7 @@ class WorkoutController extends Controller
         abort_if($section === 'experts' && ! in_array($request->user()->role->value, ['admin', 'curator'], true), 403);
 
         $media = app(MediaStorage::class);
-        $coverPath = $request->file('cover')
+        $coverPath = $section === 'experts' && $request->file('cover')
             ? $media->storeOptimized($request->file('cover'), 'workouts/covers', 'image', true)
             : null;
         $videoPath = $media->storeOptimized($request->file('video'), 'workouts/videos', 'video');
@@ -168,7 +168,7 @@ class WorkoutController extends Controller
         if ($workout->section === 'experts') {
             abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
         }
-        abort_unless(in_array($request->user()->role->value, ['curator', 'trainer', 'admin'], true), 403);
+        abort_unless(in_array($request->user()->role->value, ['curator', 'admin'], true), 403);
 
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:255'],
