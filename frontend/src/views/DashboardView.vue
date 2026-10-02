@@ -1,125 +1,122 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
-import StatTile from '@/components/StatTile.vue';
-import ProgressChart from '@/components/ProgressChart.vue';
+
 const auth = useAuthStore();
-const notifications = ref([]);
+const LiveViewer = defineAsyncComponent(() => import('@/views/WorkoutsView.vue'));
+const selectedLive = ref(null);
+const joinError = ref('');
+function joinLive() {
+    if (!activeLive.value || selectedLive.value) return;
+    joinError.value = '';
+    selectedLive.value = activeLive.value;
+}
+function liveFailed(message) { selectedLive.value = null; joinError.value = message; }
 const clientOverview = ref({ completed_workouts_count: 0 });
-const dashboard = ref({
-    clients: 0,
-    revenue_cents: 0,
-    active_courses: 0,
-    pending_reviews: 0,
-    clients_list: [],
-    report_queue: [],
-});
-const questionnaire = ref('Цель, ограничения по питанию, опыт тренировок');
-const photoPath = ref('progress/my-before-photo.jpg');
-const requestSent = ref(false);
+const news = ref([]);
+const chats = ref([]);
+const liveStreams = ref([]);
+const dashboard = ref({ clients: 0, clients_list: [], report_queue: [] });
+let liveTimer;
+
+const greetingName = computed(() => String(auth.user?.name ?? '').trim().split(/\s+/)[0] || 'участница');
 const accessEndLabel = computed(() => {
     const value = auth.user?.access_ends_at;
-
-    if (! value) {
-        return '';
-    }
-
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return '';
-    }
-
+    if (!value || Number.isNaN(new Date(value).getTime())) return '';
     return new Intl.DateTimeFormat('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        timeZone: 'Europe/Saratov',
-    }).format(date);
+        day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Saratov',
+    }).format(new Date(value));
 });
 const canRenewAccess = computed(() => !['newcomer', 'dropped_out'].includes(auth.user?.staff_status ?? ''));
+const activeLive = computed(() => liveStreams.value.find(Boolean) ?? null);
+const activeLiveRoute = computed(() => activeLive.value?.section === 'experts' ? '/expert-lives' : '/workouts');
+const activeLiveLabel = computed(() => activeLive.value?.section === 'experts' ? 'Эфир с экспертом уже начался' : 'Сейчас идет тренировка');
+const unreadChatCount = computed(() => chats.value.reduce((total, chat) => total + Number(chat.unread_count ?? 0), 0));
+
+function messageText(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : 'Новое сообщение';
+}
+function messageTime(value) {
+    if (!value || Number.isNaN(new Date(value).getTime())) return '';
+    return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Saratov' }).format(new Date(value));
+}
+function newsDate(value) {
+    if (!value || Number.isNaN(new Date(value).getTime())) return '';
+    return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Europe/Saratov' }).format(new Date(value));
+}
+function normalizeNews(payload) {
+    const entries = Array.isArray(payload) ? payload : payload?.data ?? [];
+    return entries.slice(0, 2).map((item) => ({
+        id: item.id, title: item.title ?? 'Новость', body: item.excerpt || item.body || '',
+        published_at: item.published_at ?? item.created_at, label: item.label ?? item.category?.name ?? '',
+        image: item.preview_image_path ?? item.cover_image_path ?? '',
+    }));
+}
+function normalizeChats(peers, general, important) {
+    const entries = [
+        ...(general ? [{ ...general, id: `room-${general.slug}`, name: general.name ?? 'Общий чат', query: { room: 'general' } }] : []),
+        ...(important ? [{ ...important, id: `room-${important.slug}`, name: important.name ?? 'Важная информация', query: { room: 'important' } }] : []),
+        ...peers,
+    ].filter((item) => item?.last_message_at || item?.last_message);
+    return entries.map((item) => ({
+        id: item.id, name: item.name ?? 'Чат', body: messageText(item.last_message),
+        last_message_at: item.last_message_at, unread_count: item.unread_count ?? 0, avatar_path: item.avatar_path ?? '',
+        query: item.query ?? { peer: item.id },
+    })).sort((first, second) => new Date(second.last_message_at ?? 0) - new Date(first.last_message_at ?? 0)).slice(0, 2);
+}
+async function loadClientDashboard() {
+    const [summaryResponse, peersResponse, generalResponse, importantResponse, newsResponse] = await Promise.all([
+        api.get('/workouts/summary').catch(() => ({ data: { data: { completed_workouts_count: 0 } } })),
+        api.get('/chat/peers').catch(() => ({ data: { data: [] } })),
+        api.get('/chat/general').catch(() => ({ data: { data: null } })),
+        api.get('/chat/important').catch(() => ({ data: { data: null } })),
+        api.get('/article-lessons', { params: { section: 'news', limit: 2 } }).catch(() => ({ data: { data: [] } })),
+    ]);
+    clientOverview.value = summaryResponse.data.data ?? { completed_workouts_count: 0 };
+    chats.value = normalizeChats(peersResponse.data.data ?? [], generalResponse.data.data, importantResponse.data.data);
+    news.value = normalizeNews(newsResponse.data);
+}
+async function refreshLiveStreams() {
+    const [workoutsResponse, expertsResponse] = await Promise.all([
+        api.get('/live-streams/active', { params: { section: 'workouts' } }).catch(() => ({ data: { data: null } })),
+        api.get('/live-streams/active', { params: { section: 'experts' } }).catch(() => ({ data: { data: null } })),
+    ]);
+    liveStreams.value = [workoutsResponse.data.data, expertsResponse.data.data];
+}
+async function loadTrainerDashboard() {
+    const { data } = await api.get('/trainer/dashboard');
+    dashboard.value = data.data;
+}
 onMounted(async () => {
     if (auth.isTrainer) {
-        const { data } = await api.get('/trainer/dashboard');
-        dashboard.value = data.data;
+        await loadTrainerDashboard();
         return;
     }
-    const [notificationResponse, summaryResponse] = await Promise.all([
-        api.get('/notifications').catch(() => ({ data: { data: [] } })),
-        api.get('/workouts/summary').catch(() => ({ data: { data: { completed_workouts_count: 0 } } })),
-    ]);
-    notifications.value = notificationResponse.data.data;
-    clientOverview.value = summaryResponse.data.data;
+    await Promise.all([loadClientDashboard(), refreshLiveStreams()]);
+    liveTimer = window.setInterval(() => refreshLiveStreams().catch(() => undefined), 5000);
 });
-async function sendAccessRequest() {
-    await api.post('/access-requests', { questionnaire: questionnaire.value, photo_path: photoPath.value });
-    requestSent.value = true;
-}
-function participantCountLabel(count) {
-    const value = Math.abs(Number(count) || 0);
-    const mod100 = value % 100;
-    const mod10 = value % 10;
-    const noun = mod100 >= 11 && mod100 <= 14
-        ? 'участников'
-        : mod10 === 1
-            ? 'участник'
-            : mod10 >= 2 && mod10 <= 4
-                ? 'участника'
-                : 'участников';
-    return `${value} ${noun}`;
-}
+onBeforeUnmount(() => window.clearInterval(liveTimer));
 </script>
 
 <template>
   <section v-if="auth.isTrainer" class="grid gap-5 lg:grid-cols-2">
-
-    <article v-if="false" class="glass-panel rounded-[28px] p-5">
-      <div class="mb-5 flex items-center justify-between">
-        <h2 class="text-xl font-extrabold">Мой доступ и уроки</h2>
-        <span class="material-symbols-outlined text-primary">workspace_premium</span>
-      </div>
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-        <div class="rounded-2xl border border-primary/20 bg-primary/10 p-4">
-          <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Доступ к материалам</span>
-          <strong class="mt-2 block text-lg text-primary">{{ auth.user?.access_status === 'paid' ? 'Доступ открыт' : 'Доступ ограничен' }}</strong>
-        </div>
-        <div class="rounded-2xl border border-white/10 bg-surface-container p-4">
-          <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Пройдено тренировок</span>
-          <strong class="mt-2 block text-3xl text-on-surface">{{ clientOverview.completed_workouts_count }}</strong>
-          <p class="mt-1 text-sm text-on-muted">Отмечено во вкладке «Тренировки»</p>
-        </div>
-      </div>
-    </article>
-
     <article class="glass-panel rounded-[28px] p-5 shadow-[0_14px_38px_rgba(109,56,168,0.16)]">
       <div class="mb-5 flex items-center justify-between">
         <div class="min-w-0">
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">сопровождение</p>
-          <div class="mt-1 flex flex-wrap items-center gap-3"><h2 class="text-2xl font-extrabold">Клиенты</h2><span class="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-extrabold text-primary">{{ participantCountLabel(dashboard.clients) }}</span></div>
+          <div class="mt-1 flex flex-wrap items-center gap-3"><h2 class="text-2xl font-extrabold">Клиенты</h2><span class="rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-extrabold text-primary">{{ dashboard.clients }} участниц</span></div>
         </div>
         <RouterLink to="/participants" class="rounded-2xl bg-primary px-4 py-2 text-sm font-extrabold text-[#470382]">Открыть</RouterLink>
       </div>
       <div class="dashboard-scroll grid max-h-[500px] gap-3 overflow-y-auto pr-2">
         <article v-for="client in dashboard.clients_list" :key="client.id" class="rounded-2xl border border-white/10 bg-surface-container p-4">
-          <div class="flex items-center gap-3">
-            <div class="grid h-11 w-11 place-items-center rounded-full bg-primary/15 text-primary">
-              <span class="material-symbols-outlined">person</span>
-            </div>
-            <div>
-              <strong class="block">{{ client.name }}</strong>
-              <span class="text-sm text-on-muted">{{ client.goal }}</span>
-            </div>
-          </div>
+          <div class="flex items-center gap-3"><div class="grid h-11 w-11 place-items-center rounded-full bg-primary/15 text-primary"><span class="material-symbols-outlined">person</span></div><div><strong class="block">{{ client.name }}</strong><span class="text-sm text-on-muted">{{ client.goal }}</span></div></div>
         </article>
       </div>
     </article>
-
     <article class="glass-panel rounded-[28px] p-5">
-      <div class="mb-5 flex items-center justify-between">
-        <h2 class="text-2xl font-extrabold">Очередь отчетов</h2>
-        <span class="material-symbols-outlined text-primary">assignment</span>
-      </div>
+      <div class="mb-5 flex items-center justify-between"><h2 class="text-2xl font-extrabold">Очередь отчетов</h2><span class="material-symbols-outlined text-primary">assignment</span></div>
       <div v-if="dashboard.report_queue.length" class="dashboard-scroll grid max-h-[500px] gap-3 overflow-y-auto pr-2">
         <RouterLink v-for="report in dashboard.report_queue" :key="report.client_id" :to="{ path: '/participants', query: { client: report.client_id } }" class="rounded-2xl border border-white/10 bg-surface-container p-4 transition hover:border-primary/40 hover:bg-primary/10">
           <div class="flex items-center justify-between gap-3"><strong>{{ report.client_name }}</strong><span class="text-xs font-bold uppercase text-primary">Открыть отчёт</span></div>
@@ -130,196 +127,43 @@ function participantCountLabel(count) {
     </article>
   </section>
 
-  <section v-else-if="false" class="grid gap-5 lg:grid-cols-4">
-    <article class="glass-panel relative overflow-hidden rounded-[28px] p-6 lg:col-span-2 lg:row-span-2">
-      <div class="absolute right-0 top-0 h-44 w-44 rounded-full bg-primary/10 blur-3xl" />
-      <div class="relative flex items-start justify-between gap-4">
-        <div>
-          <p class="text-sm font-semibold text-primary">Твой план на сегодня</p>
-          <h2 class="mt-2 text-[30px] font-extrabold leading-9">
-            {{ auth.user?.access_status === 'paid' ? 'Полный доступ открыт' : 'Открыты вводные уроки' }}
-          </h2>
+  <section v-else class="dashboard-home grid min-w-0 gap-5">
+    <button v-if="activeLive" type="button" class="live-join-banner" :disabled="Boolean(selectedLive)" @click="joinLive">
+      <span class="live-join-icon material-symbols-outlined" aria-hidden="true">sensors</span>
+      <span class="live-join-copy"><span class="live-join-label">{{ activeLiveLabel }}</span><strong>Присоединяйся!</strong><span>Забота о теле — это вклад в себя</span></span>
+      <span class="live-join-action">{{ selectedLive ? 'Подключение…' : activeLive.section === 'experts' ? 'Перейти к эфиру' : 'Перейти к тренировке' }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></span>
+    </button>
+    <p v-if="joinError" role="alert" class="rounded-xl bg-red-500/10 p-3 text-sm text-red-200">{{ joinError }}</p>
+    <LiveViewer v-if="selectedLive" :key="selectedLive.id" live-only :section="selectedLive.section || 'workouts'" :initial-stream="selectedLive" @live-closed="selectedLive = null" @live-failed="liveFailed" />
+
+    <div class="quick-links grid grid-cols-3 gap-2 lg:gap-5">
+      <RouterLink to="/workouts" class="quick-link"><span class="material-symbols-outlined quick-link__icon">fitness_center</span><strong>Тренировки</strong><small>Записи онлайн тренировок</small></RouterLink>
+      <RouterLink to="/progress" class="quick-link"><span class="material-symbols-outlined quick-link__icon">monitoring</span><strong>Мой прогресс</strong><small>Результаты и замеры</small></RouterLink>
+      <RouterLink to="/lessons" class="quick-link"><span class="material-symbols-outlined quick-link__icon">article</span><strong>Уроки</strong><small>Материалы курса</small></RouterLink>
+    </div>
+    <div class="dashboard-panels grid gap-5 xl:grid-cols-2">
+      <article class="glass-panel order-3 rounded-[28px] p-5 xl:order-3 xl:col-span-2">
+        <div class="mb-5 flex items-center justify-between"><h2 class="text-xl font-extrabold">Мой доступ и уроки</h2><span class="material-symbols-outlined text-primary">workspace_premium</span></div>
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <div class="rounded-2xl bg-[#342c3e] p-4"><span class="text-xs font-bold uppercase tracking-wide text-on-muted">Доступ к материалам</span><strong class="mt-2 block text-lg text-primary"><template v-if="auth.user?.access_status === 'paid' && accessEndLabel">Доступ открыт до <span class="text-white">{{ accessEndLabel }}</span></template><template v-else>{{ auth.user?.access_status === 'paid' ? 'Доступ открыт' : 'Доступ ограничен' }}</template></strong><div class="mt-4 flex flex-col gap-2 sm:flex-row"><RouterLink to="/tariffs" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-primary px-4 py-2.5 text-sm font-extrabold text-[#470382]">Выбрать тариф</RouterLink><a v-if="canRenewAccess" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-primary/35 px-4 py-2.5 text-sm font-extrabold text-primary" href="https://lazareva-secret.tb.ru/prodlenie" target="_blank" rel="noreferrer">Продлить</a></div></div>
+          <div class="rounded-2xl bg-surface-container p-4"><span class="text-xs font-bold uppercase tracking-wide text-on-muted">Пройдено тренировок</span><strong class="mt-2 block text-3xl">{{ clientOverview.completed_workouts_count }}</strong><p class="mt-1 text-sm text-on-muted">Отмечено во вкладке «Тренировки»</p></div>
         </div>
-        <div class="grid h-14 w-14 place-items-center rounded-full bg-surface-high">
-          <span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1">favorite</span>
-        </div>
-      </div>
-
-      <div class="relative mx-auto my-8 grid h-44 w-44 place-items-center rounded-full border-[10px] border-surface-highest">
-        <div class="absolute inset-[-10px] rotate-45 rounded-full border-[10px] border-primary border-r-transparent border-t-transparent" />
-        <div class="text-center">
-          <strong class="block text-[36px] font-extrabold">65%</strong>
-          <span class="text-xs font-semibold text-on-muted">Прогресс</span>
-        </div>
-      </div>
-
-      <div class="grid gap-3">
-        <RouterLink to="/workouts" class="flex items-center gap-4 rounded-2xl border border-white/5 bg-surface-container/70 p-4">
-          <div class="grid h-11 w-11 place-items-center rounded-full bg-primary/15 text-primary">
-            <span class="material-symbols-outlined">fitness_center</span>
-          </div>
-          <div class="flex-1">
-            <h3 class="font-bold">Тренировка дня</h3>
-            <p class="text-sm text-on-muted">Видео, таймер и отметка выполнения</p>
-          </div>
-          <span class="material-symbols-outlined text-primary">chevron_right</span>
-        </RouterLink>
-        <RouterLink to="/nutrition" class="flex items-center gap-4 rounded-2xl border border-white/5 bg-surface-container/70 p-4">
-          <div class="grid h-11 w-11 place-items-center rounded-full bg-secondary/15 text-secondary">
-            <span class="material-symbols-outlined">restaurant</span>
-          </div>
-          <div class="flex-1">
-            <h3 class="font-bold">Дневник питания</h3>
-            <p class="text-sm text-on-muted">КБЖУ, рецепты и ручные записи</p>
-          </div>
-          <span class="material-symbols-outlined text-primary">chevron_right</span>
-        </RouterLink>
-      </div>
-    </article>
-
-    <StatTile label="Ккал цель" value="1 760" icon="local_fire_department" />
-    <StatTile label="Белок" value="105 г" icon="egg_alt" />
-    <StatTile label="Уроки" value="68%" icon="play_circle" />
-    <StatTile label="Замеры" value="-1.6 кг" icon="monitoring" />
-
-    <article class="glass-panel rounded-[28px] p-5 lg:col-span-2">
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-xl font-extrabold">Динамика веса</h2>
-        <RouterLink class="text-sm font-bold text-primary" to="/progress">Все замеры</RouterLink>
-      </div>
-      <ProgressChart :entries="progress" />
-    </article>
-
-    <article class="glass-panel rounded-[28px] p-5 lg:col-span-2">
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-xl font-extrabold">Уведомления</h2>
-        <span class="material-symbols-outlined text-primary">notifications</span>
-      </div>
-      <ul class="grid gap-3">
-        <li v-for="item in notifications" :key="item.id" class="rounded-2xl border border-white/5 bg-surface-container p-4">
-          <strong class="block text-on-surface">{{ item.title }}</strong>
-          <span class="mt-1 block text-sm leading-6 text-on-muted">{{ item.body }}</span>
-        </li>
-      </ul>
-    </article>
-
-    <article v-if="auth.user?.access_status !== 'paid'" class="glass-panel rounded-[28px] p-5 lg:col-span-4">
-      <div class="mb-5 flex items-center justify-between">
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">доступ</p>
-          <h2 class="mt-1 text-2xl font-extrabold">Анкета для открытия платного курса</h2>
-        </div>
-        <span class="material-symbols-outlined text-primary">assignment</span>
-      </div>
-      <form class="grid gap-4 lg:grid-cols-[1fr_320px_auto]" @submit.prevent="sendAccessRequest">
-        <textarea v-model="questionnaire" class="min-h-28 rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" />
-        <input v-model="photoPath" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" placeholder="Путь к фото прогресса" />
-        <button class="rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-6 py-4 font-extrabold text-white" type="submit">
-          Отправить
-        </button>
-      </form>
-      <p v-if="requestSent" class="mt-3 text-sm font-bold text-primary">Заявка отправлена администратору.</p>
-    </article>
-  </section>
-
-  <section v-else class="grid gap-5 lg:grid-cols-2">
-    <article class="glass-panel rounded-[28px] p-6 lg:col-span-2">
-      <div class="flex items-start gap-4">
-        <div class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-primary/15 text-primary">
-          <span class="material-symbols-outlined">favorite</span>
-        </div>
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Личный кабинет</p>
-          <h2 class="mt-2 max-w-3xl text-[17px] font-extrabold leading-6 sm:text-2xl sm:leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от <span class="text-primary">Анастасии Лазаревой</span></h2>
-        </div>
-      </div>
-    </article>
-
-    <article class="glass-panel rounded-[28px] p-5">
-      <div class="mb-5 flex items-center justify-between">
-        <h2 class="text-xl font-extrabold">Мой доступ и уроки</h2>
-        <span class="material-symbols-outlined text-primary">workspace_premium</span>
-      </div>
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-        <div class="rounded-2xl border border-primary/25 bg-[#342c3e] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-          <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Доступ к материалам</span>
-          <strong class="mt-2 block text-lg text-primary">
-            <template v-if="auth.user?.access_status === 'paid' && accessEndLabel">
-              Доступ открыт до <span class="text-white">{{ accessEndLabel }}</span>
-            </template>
-            <template v-else>{{ auth.user?.access_status === 'paid' ? 'Доступ открыт' : 'Доступ ограничен' }}</template>
-          </strong>
-          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
-            <RouterLink to="/tariffs" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl bg-primary px-4 py-2.5 text-sm font-extrabold text-[#470382] transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-container">
-              Выбрать тариф
-            </RouterLink>
-            <a v-if="canRenewAccess" class="inline-flex min-h-11 flex-1 items-center justify-center rounded-xl border border-primary/35 bg-white/5 px-4 py-2.5 text-sm font-extrabold text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-container" href="https://lazareva-secret.tb.ru/prodlenie" target="_blank" rel="noreferrer">
-              Продлить
-            </a>
-          </div>
-        </div>
-        <div class="rounded-2xl border border-white/10 bg-surface-container p-4">
-          <span class="text-xs font-bold uppercase tracking-wide text-on-muted">Пройдено тренировок</span>
-          <strong class="mt-2 block text-3xl text-on-surface">{{ clientOverview.completed_workouts_count }}</strong>
-          <p class="mt-1 text-sm text-on-muted">Отмечено во вкладке «Тренировки»</p>
-        </div>
-      </div>
-    </article>
-
-  </section>
-
-  <section v-if="false" class="grid gap-5 lg:grid-cols-2">
-    <article class="glass-panel rounded-[28px] p-6 lg:col-span-2">
-      <div class="flex items-start gap-4">
-        <div class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-primary/15 text-primary">
-          <span class="material-symbols-outlined">favorite</span>
-        </div>
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Личный кабинет</p>
-          <h2 class="mt-2 max-w-3xl text-[17px] font-extrabold leading-6 sm:text-2xl sm:leading-9 lg:text-3xl lg:leading-10">Добро пожаловать на Курс по снижению веса с индивидуальным сопровождением от <span class="text-primary">Анастасии Лазаревой</span></h2>
-        </div>
-      </div>
-    </article>
-
-    <article class="glass-panel rounded-[28px] p-5 lg:col-span-2">
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-xl font-extrabold">Уведомления</h2>
-        <span class="material-symbols-outlined text-primary">notifications</span>
-      </div>
-      <ul v-if="notifications.length" class="grid gap-3">
-        <li v-for="item in notifications" :key="item.id" class="rounded-2xl border border-white/5 bg-surface-container p-4">
-          <strong class="block text-on-surface">{{ item.title }}</strong>
-          <span class="mt-1 block text-sm leading-6 text-on-muted">{{ item.body }}</span>
-        </li>
-      </ul>
-      <p v-else class="rounded-2xl border border-white/5 bg-surface-container p-4 text-sm text-on-muted">Новых уведомлений пока нет.</p>
-    </article>
+      </article>
+      <article class="news-panel glass-panel order-1 rounded-[28px] p-5 xl:order-2"><div class="mb-5 flex items-center gap-3"><span class="material-symbols-outlined text-primary">campaign</span><h2 class="text-xl font-extrabold">Новости</h2></div><div v-if="news.length" class="news-list grid divide-y divide-white/10"><RouterLink v-for="item in news" :key="item.id" :to="{ path: '/news', query: { news: item.id } }" class="news-item flex gap-3 py-4 first:pt-0 last:pb-0"><img v-if="item.image" :src="item.image" :alt="item.title" class="h-20 w-20 shrink-0 rounded-xl object-cover"><span v-else class="grid h-20 w-20 shrink-0 place-items-center rounded-xl bg-primary/15 text-primary"><span class="material-symbols-outlined">image</span></span><span class="min-w-0"><span v-if="item.label" class="text-xs font-bold uppercase tracking-wide text-primary">{{ item.label }}</span><h3 class="mt-1 text-base font-extrabold">{{ item.title }}</h3><p v-if="item.body" class="mt-1 line-clamp-2 text-sm leading-5 text-on-muted">{{ item.body }}</p><time class="mt-2 block text-xs text-on-muted">{{ newsDate(item.published_at) }}</time></span></RouterLink></div><p v-else class="rounded-2xl bg-surface-container p-4 text-sm leading-6 text-on-muted">Новых публикаций пока нет.</p></article>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.dashboard-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(203 155 255 / 0.75) transparent;
-}
-
-.dashboard-scroll::-webkit-scrollbar {
-  width: 6px;
-}
-
-.dashboard-scroll::-webkit-scrollbar-track {
-  margin-block: 8px;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 0.04);
-}
-
-.dashboard-scroll::-webkit-scrollbar-thumb {
-  min-height: 28px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgb(220 178 255), rgb(165 94 234));
-}
-
-.dashboard-scroll::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgb(232 203 255), rgb(182 110 250));
-}
+.live-banner { background: linear-gradient(105deg, rgb(195 133 235), rgb(145 74 196)); box-shadow: 0 14px 38px rgb(142 78 189 / 0.24); }
+.quick-link { display: flex; min-width: 0; min-height: 180px; flex-direction: column; gap: .55rem; overflow-wrap: anywhere; border-radius: 24px; background: rgb(255 255 255 / .035); padding: 1rem; transition: background .2s ease, transform .2s ease; }
+.quick-link:hover { background: rgb(203 155 255 / .12); transform: translateY(-2px); }
+.quick-link__icon { display: grid; width: 2.75rem; height: 2.75rem; place-items: center; border-radius: 1rem; background: rgb(203 155 255 / .16); color: rgb(218 175 255); font-size: 1.5rem; }
+.quick-link strong { margin-top: auto; font-size: 1rem; }
+.quick-link small, .chat-preview small { color: rgb(190 182 202); font-size: .875rem; line-height: 1.35; }
+.chat-preview { display: flex; min-width: 0; min-height: 68px; align-items: center; gap: .75rem; border-radius: 1rem; background: rgb(255 255 255 / .035); padding: .75rem; transition: background .2s ease; }
+.chat-preview:hover { background: rgb(203 155 255 / .1); }
+@media (max-width: 639px) { .mobile-information-pair { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: stretch; gap: .75rem; } .news-panel, .chat-panel { min-width: 0; } .chat-panel { padding: .75rem; } .chat-panel > :first-child { margin-bottom: .75rem; gap: .25rem; } .chat-panel > :first-child > a { display: none; } .chat-list { grid-template-columns: minmax(0, 1fr); gap: .5rem; } .chat-preview { min-height: 3.5rem; padding: .45rem; gap: 0; } .chat-preview > :first-child, .chat-preview time { display: none; } .chat-preview small { font-size: .68rem; } }
+@media (max-width: 639px) { .quick-link { min-height: 7rem; border-radius: 16px; padding: .6rem; gap: .25rem; } .quick-link__icon { width: 2.1rem; height: 2.1rem; border-radius: .75rem; font-size: 1.2rem; } .quick-link strong { font-size: .74rem; line-height: 1.15; } .quick-link small { font-size: .62rem; line-height: 1.2; } .news-panel { min-height: 21rem; } .news-item { min-width: 0; flex-direction: column; gap: .5rem; } .news-item > img, .news-item > span:first-child { width: 100%; height: 5rem; } .news-item h3 { overflow-wrap: anywhere; font-size: .875rem; } .news-panel { padding: .75rem; } }
+@media (prefers-reduced-motion: reduce) { .quick-link, .chat-preview { transition: none; } .quick-link:hover { transform: none; } }
 </style>

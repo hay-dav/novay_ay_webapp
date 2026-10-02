@@ -1,9 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { api } from '@/services/api';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
+const route = useRoute();
 const peers = ref([]);
 const general = ref(null);
 const important = ref(null);
@@ -217,6 +219,22 @@ async function openChat(item) {
     await loadMessages();
 }
 function showChatList() { mobileListOpen.value = true; }
+async function openDashboardChat() {
+    const room = String(route.query.room ?? '');
+    if (room === 'general' && general.value) {
+        await openChat({ type: 'general' });
+        return true;
+    }
+    if (room === 'important' && important.value) {
+        await openChat({ type: 'important' });
+        return true;
+    }
+    const peerId = Number(route.query.peer);
+    const peer = peers.value.find((item) => Number(item.id) === peerId);
+    if (!peer) return false;
+    await openChat({ type: 'direct', id: peer.id });
+    return true;
+}
 async function openCuratorConversation(conversation) {
     showCuratorConversations.value = true;
     await openChat({ type: 'curator-view', conversation });
@@ -347,7 +365,7 @@ async function toggleVoiceRecording() {
         mediaRecorder.start(); recording.value = true;
     } catch { chatError.value = 'Не удалось получить доступ к микрофону.'; }
 }
-onMounted(async () => { await Promise.all([loadDirectory(), loadChatPushPreferences()]); if (desktopChatLayout()) await loadMessages(); window.addEventListener('novaya-ya:notification', refreshForNotification); window.addEventListener('novaya-ya:show-chat-list', showChatList); });
+onMounted(async () => { await Promise.all([loadDirectory(), loadChatPushPreferences()]); const openedFromDashboard = await openDashboardChat(); if (!openedFromDashboard && desktopChatLayout()) await loadMessages(); window.addEventListener('novaya-ya:notification', refreshForNotification); window.addEventListener('novaya-ya:show-chat-list', showChatList); });
 onBeforeUnmount(() => { window.removeEventListener('novaya-ya:notification', refreshForNotification); window.removeEventListener('novaya-ya:show-chat-list', showChatList); window.clearTimeout(messagePressTimer); if (mediaRecorder?.state === 'recording') mediaRecorder.stop(); recordingStream?.getTracks().forEach((track) => track.stop()); });
 </script>
 

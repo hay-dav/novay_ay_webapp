@@ -5,7 +5,8 @@ import { useAuthStore } from '@/stores/auth';
 import ContentLoadingState from '@/components/ContentLoadingState.vue';
 import { useLiveStream } from '@/composables/useLiveStream';
 import VideoWatermark from '@/components/VideoWatermark.vue';
-const props = defineProps({ section: { type: String, default: 'workouts' } });
+const props = defineProps({ section: { type: String, default: 'workouts' }, favoritesOnly: Boolean, liveOnly: Boolean, initialStream: Object });
+const emit = defineEmits(['live-closed', 'live-failed']);
 const auth = useAuthStore();
 const {
     activeStream,
@@ -44,6 +45,21 @@ const {
     selectRecordingStage,
     closeLiveModal,
 } = useLiveStream({ section: props.section });
+watch(liveModalOpen, (open, previous) => { if (props.liveOnly && previous && !open) emit('live-closed'); });
+const favoriteSaving = ref(new Set());
+const favoriteError = ref('');
+async function toggleFavorite(workout) {
+    if (favoriteSaving.value.has(workout.id)) return;
+    favoriteSaving.value.add(workout.id);
+    favoriteError.value = '';
+    try {
+        const { data } = await api.put('/workouts/' + workout.id + '/favorite', { favorite: !workout.is_favorite });
+        workout.is_favorite = data.data.is_favorite;
+    } catch (error) {
+        favoriteError.value = error.response?.data?.message ?? 'Не удалось сохранить избранное. Попробуйте ещё раз.';
+    } finally { favoriteSaving.value.delete(workout.id); }
+}
+watch(() => props.favoritesOnly, () => { activeFilter.value = 'all'; searchQuery.value = ''; load(); });
 const isExpertSection = computed(() => props.section === 'experts');
 // Keep the host labels below while sharing the same controls with participants.
 const hostMicrophoneEnabled = microphoneEnabled;
@@ -111,7 +127,7 @@ const workoutFilters = [
 const filteredWorkouts = computed(() => {
     const search = searchQuery.value.trim().toLocaleLowerCase('ru-RU');
 
-    return workouts.value.filter((workout) => (isExpertSection.value || activeFilter.value === 'all' || workout.content_type === activeFilter.value)
+    return workouts.value.filter((workout) => (!props.favoritesOnly || workout.is_favorite) && (isExpertSection.value || activeFilter.value === 'all' || workout.content_type === activeFilter.value)
         && (!search || workout.title.toLocaleLowerCase('ru-RU').includes(search)));
 });
 const emptyFilterMessage = computed(() => ({
@@ -120,7 +136,7 @@ const emptyFilterMessage = computed(() => ({
     video: 'Видео-тренировок пока нет. Новые видео появятся здесь после публикации.',
     podcast: 'Подкасты пока не добавлены.',
 }[activeFilter.value]));
-const sectionEmptyMessage = computed(() => isExpertSection.value
+const sectionEmptyMessage = computed(() => props.favoritesOnly ? 'Нажмите «В избранное» на карточке тренировки — видео появится здесь.' : isExpertSection.value
     ? 'Записи экспертных эфиров появятся здесь после завершения трансляции.'
     : emptyFilterMessage.value);
 async function load() {
@@ -487,7 +503,14 @@ function handleKeydown(event) {
     else if (showCreateModal.value)
         closeModal();
 }
-onMounted(() => {
+onMounted(async () => {
+    if (props.liveOnly) {
+        activeStream.value = props.initialStream;
+        await openLiveBroadcast();
+        if (!liveModalOpen.value) emit('live-failed', liveError.value || 'Эфир недоступен. Попробуйте ещё раз.');
+        else startActivePolling();
+        return;
+    }
     mobileRecordingMediaQuery = window.matchMedia('(max-width: 900px) and (pointer: coarse)');
     updateRecordingVariant();
     mobileRecordingMediaQuery.addEventListener?.('change', updateRecordingVariant);
@@ -504,11 +527,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section v-show="!liveModalOpen" class="grid gap-6">
+  <section v-if="!props.liveOnly" v-show="!liveModalOpen" class="grid gap-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">{{ isExpertSection ? 'Экспертные встречи' : 'Тренировки' }}</p>
-        <h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ isExpertSection ? 'Эфиры с экспертами' : 'Видео-тренировки' }}</h2>
+        <h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ props.favoritesOnly ? 'Избранное' : isExpertSection ? 'Эфиры с экспертами' : 'Видео-тренировки' }}</h2>
       </div>
       <div class="flex flex-col gap-3 sm:flex-row">
         <button
@@ -531,16 +554,6 @@ onBeforeUnmount(() => {
           Эфир идет
         </button>
         <button
-          v-if="canWatchLive && activeStream"
-          class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-red-500 px-5 py-3 text-sm font-extrabold text-white shadow-[0_10px_30px_rgba(239,68,68,0.22)]"
-          type="button"
-          :disabled="liveLoading"
-          @click="openLiveBroadcast"
-        >
-          <span class="material-symbols-outlined text-[21px]">live_tv</span>
-          {{ liveLoading ? 'Подключение...' : 'Просмотреть эфир' }}
-        </button>
-        <button
           v-if="canManageWorkouts && !isExpertSection"
           class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white shadow-[0_10px_30px_rgba(109,56,168,0.25)]"
           type="button"
@@ -561,7 +574,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="!isExpertSection" class="flex flex-wrap gap-2" role="tablist" aria-label="Фильтры тренировок">
+    <button v-if="canWatchLive && activeStream && !props.favoritesOnly" type="button" class="live-join-banner" :disabled="liveLoading" @click="openLiveBroadcast">
+      <span class="live-join-icon material-symbols-outlined" aria-hidden="true">sensors</span>
+      <span class="live-join-copy"><span class="live-join-label">{{ isExpertSection ? 'Сейчас идет эфир с экспертом' : 'Сейчас идет тренировка' }}</span><strong>Присоединяйся!</strong><span>Забота о теле — это вклад в себя</span></span>
+      <span class="live-join-action">{{ liveLoading ? 'Подключение…' : isExpertSection ? 'Перейти к эфиру' : 'Перейти к тренировке' }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></span>
+    </button>
+
+    <div v-if="!isExpertSection && !props.favoritesOnly" class="flex flex-wrap gap-2" role="tablist" aria-label="Фильтры тренировок">
       <button
         v-for="filter in workoutFilters.filter((item) => item.value !== 'podcast')"
         :key="filter.value"
@@ -588,6 +607,7 @@ onBeforeUnmount(() => {
       />
     </label>
 
+    <p v-if="favoriteError" class="rounded-xl bg-red-500/10 p-3 text-sm text-red-200" role="alert">{{ favoriteError }}</p>
     <p v-if="orderingError" class="rounded-2xl border border-red-400/25 bg-red-500/10 p-3 text-sm font-semibold text-red-200" role="alert">{{ orderingError }}</p>
     <ContentLoadingState v-if="workoutsLoading" :label="isExpertSection ? 'Загружаем эфиры…' : 'Загружаем тренировки…'" />
     <div v-else-if="filteredWorkouts.length" class="grid gap-5 lg:grid-cols-2">
@@ -644,6 +664,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p class="mt-3 text-sm leading-6 text-on-muted">{{ workout.description }}</p>
+          <button v-if="auth.user?.role === 'client' && !isExpertSection" type="button" class="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary/35 px-3 py-2 text-sm font-bold text-primary disabled:opacity-50" :class="{ 'bg-primary/15': workout.is_favorite }" :disabled="favoriteSaving.has(workout.id)" :aria-pressed="Boolean(workout.is_favorite)" @click="toggleFavorite(workout)"><span class="material-symbols-outlined" aria-hidden="true">{{ workout.is_favorite ? 'favorite' : 'favorite_border' }}</span>{{ favoriteSaving.has(workout.id) ? 'Сохраняем…' : workout.is_favorite ? 'Убрать из избранного' : 'В избранное' }}</button>
           <button
             v-if="!canManageWorkouts && !isExpertSection"
             class="mt-5 w-full rounded-2xl px-6 py-4 font-extrabold"
@@ -688,7 +709,7 @@ onBeforeUnmount(() => {
     <div v-else class="glass-panel grid min-h-64 place-items-center rounded-[28px] p-8 text-center">
       <div>
         <span class="material-symbols-outlined text-[52px] text-primary">{{ isExpertSection ? 'live_tv' : activeFilter === 'podcast' ? 'headphones' : activeFilter === 'live' ? 'live_tv' : 'fitness_center' }}</span>
-        <h3 class="mt-3 text-xl font-extrabold">{{ isExpertSection ? 'Эфиров с экспертами пока нет' : activeFilter === 'podcast' ? 'Подкастов пока нет' : activeFilter === 'live' ? 'Записей эфиров пока нет' : 'Видео-тренировок пока нет' }}</h3>
+        <h3 class="mt-3 text-xl font-extrabold">{{ props.favoritesOnly ? 'В избранном пока нет тренировок' : isExpertSection ? 'Эфиров с экспертами пока нет' : activeFilter === 'podcast' ? 'Подкастов пока нет' : activeFilter === 'live' ? 'Записей эфиров пока нет' : 'Видео-тренировок пока нет' }}</h3>
         <p class="mt-2 text-sm text-on-muted">{{ sectionEmptyMessage }}</p>
       </div>
     </div>

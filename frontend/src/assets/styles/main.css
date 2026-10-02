@@ -370,3 +370,28 @@
     object-position: center;
   }
 }
+
+
+/* Shared live invitation and highlighted mobile navigation. */
+.live-join-banner, .live-accent-tile {
+    background: linear-gradient(110deg, #f4d8ef 0%, #e8b9e9 60%, #d6a6f0 100%);
+    color: #40133f;
+}
+.live-accent-tile .material-symbols-outlined { color: #79266f; }
+.live-join-banner {
+    display: flex; align-items: center; gap: 1rem; width: 100%; min-width: 0;
+    border: 1px solid #f5def5; border-radius: 24px; padding: 1.25rem; text-align: left;
+}
+.live-join-icon { display: grid; place-items: center; flex-shrink: 0; width: 3.75rem; height: 3.75rem; border: 1px solid #fff9; border-radius: 50%; color: #a32770; font-size: 2.5rem; }
+.live-join-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: .2rem; }
+.live-join-copy strong { font-size: 1.3rem; }
+.live-join-label { align-self: flex-start; border-radius: 999px; background: #a3378c24; padding: .15rem .55rem; font-size: .7rem; font-weight: 800; text-transform: uppercase; }
+.live-join-action { display: flex; align-items: center; justify-content: center; gap: .3rem; border-radius: 16px; padding: 1rem; background: #791d78; color: white; font-size: .875rem; font-weight: 800; }
+.live-join-banner:focus-visible, .live-accent-tile:focus-visible { outline: 3px solid var(--color-primary); outline-offset: 3px; }
+.live-join-banner:disabled { cursor: wait; opacity: .8; }
+@media (max-width: 639px) {
+    .live-join-banner { flex-wrap: wrap; gap: .65rem; padding: .85rem; border-radius: 20px; }
+    .live-join-icon { width: 2.75rem; height: 2.75rem; font-size: 2rem; }
+    .live-join-copy > span:last-child { font-size: .8rem; }
+    .live-join-action { width: 100%; min-height: 44px; padding: .75rem; }
+}

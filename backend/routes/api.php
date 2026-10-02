@@ -80,6 +80,7 @@ Route::prefix('v1')->group(function (): void {
         Route::patch('/workouts/expert-order', [WorkoutController::class, 'reorderExpertLives']);
         Route::patch('/workouts/{workout}', [WorkoutController::class, 'update']);
         Route::delete('/workouts/{workout}', [WorkoutController::class, 'destroy']);
+        Route::put('/workouts/{workout}/favorite', [WorkoutController::class, 'favorite']);
         Route::post('/workouts/{workout}/complete', [WorkoutController::class, 'complete']);
         Route::get('/live-streams/active', [LiveStreamController::class, 'active']);
         Route::post('/live-streams/start', [LiveStreamController::class, 'start']);

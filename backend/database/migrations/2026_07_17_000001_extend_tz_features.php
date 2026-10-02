@@ -91,6 +91,8 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        $this->addWorkoutFavorites();
+
         Schema::create('workout_completions', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
@@ -131,12 +133,25 @@ return new class extends Migration
         });
     }
 
+    // Also callable for an existing installation without replaying this migration.
+    public function addWorkoutFavorites(): void
+    {
+        if (Schema::hasTable('workout_favorites')) return;
+        Schema::create('workout_favorites', function (Blueprint $table): void {
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('workout_id')->constrained()->cascadeOnDelete();
+            $table->timestamp('created_at')->useCurrent();
+            $table->primary(['user_id', 'workout_id']);
+        });
+    }
+
     public function down(): void
     {
         Schema::dropIfExists('notification_templates');
         Schema::dropIfExists('chat_messages');
         Schema::dropIfExists('lesson_questions');
         Schema::dropIfExists('workout_completions');
+        Schema::dropIfExists('workout_favorites');
         Schema::dropIfExists('workouts');
         Schema::dropIfExists('food_entries');
         Schema::dropIfExists('favorite_recipes');

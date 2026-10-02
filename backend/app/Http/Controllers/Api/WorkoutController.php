@@ -24,8 +24,10 @@ class WorkoutController extends Controller
             || in_array($request->user()->role->value, ['admin', 'curator', 'trainer'], true);
         $canDownloadLiveRecordings = in_array($request->user()->role->value, ['admin', 'curator'], true);
 
+        $favoriteIds = DB::table('workout_favorites')->where('user_id', $user->id)->pluck('workout_id')->flip();
         $workouts = Workout::query()
             ->where('section', $section)
+            ->when($request->boolean('favorites'), fn ($query) => $query->whereIn('id', $favoriteIds->keys()))
             ->when(! $isPaid, fn ($query) => $query->where('access_level', 'free'))
             ->when($section === 'experts', fn ($query) => $query->orderByRaw('COALESCE(sort_order, 2147483647)'))
             ->latest()
@@ -40,9 +42,10 @@ class WorkoutController extends Controller
             : collect();
 
         $media = app(MediaStorage::class);
-        $workouts->each(function (Workout $workout) use ($request, $recordingWorkoutIds, $completedWorkoutIds, $canDownloadLiveRecordings, $media): void {
+        $workouts->each(function (Workout $workout) use ($request, $favoriteIds, $recordingWorkoutIds, $completedWorkoutIds, $canDownloadLiveRecordings, $media): void {
             $workout->setAttribute('cover_path', $media->publicUrl($workout->cover_path));
             $workout->setAttribute('content_type', $recordingWorkoutIds->has($workout->id) ? 'live' : 'video');
+            $workout->setAttribute('is_favorite', $favoriteIds->has($workout->id));
             $workout->setAttribute('is_completed', $completedWorkoutIds->has($workout->id));
             if ($workout->video_path) {
                 $workout->setAttribute('video_path', URL::temporarySignedRoute(
@@ -68,6 +71,22 @@ class WorkoutController extends Controller
         });
 
         return response()->json(['data' => $workouts]);
+    }
+
+    public function favorite(Request $request, Workout $workout)
+    {
+        abort_unless($request->user()->role->value === 'client', 403);
+        abort_unless($workout->section === 'workouts', 422);
+        $data = $request->validate(['favorite' => ['required', 'boolean']]);
+        if ($data['favorite']) {
+            abort_unless($workout->access_level === 'free' || $request->user()->access_status === 'paid', 403);
+            DB::table('workout_favorites')->insertOrIgnore([
+                'user_id' => $request->user()->id, 'workout_id' => $workout->id, 'created_at' => now(),
+            ]);
+        } else {
+            DB::table('workout_favorites')->where('user_id', $request->user()->id)->where('workout_id', $workout->id)->delete();
+        }
+        return response()->json(['data' => ['id' => $workout->id, 'is_favorite' => (bool) $data['favorite']]]);
     }
 
     public function summary(Request $request)

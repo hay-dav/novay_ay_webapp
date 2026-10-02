@@ -20,10 +20,12 @@ class ArticleLessonController extends Controller
         $lessons = ArticleLesson::query()
             ->where('section', $section)
             ->whereNotNull('published_at')
-            ->when(! $isPaid, fn ($query) => $query->where('access_level', 'free'))
+            ->when($section !== 'news' && ! $isPaid, fn ($query) => $query->where('access_level', 'free'))
             ->with('blocks')
-            ->orderBy('sort_order')
+            ->when($section !== 'news', fn ($query) => $query->orderBy('sort_order'))
             ->latest('published_at')
+            ->orderByDesc('id')
+            ->when($section === 'news' && $request->integer('limit') > 0, fn ($query) => $query->limit(min(100, $request->integer('limit'))))
             ->get();
 
         $lessons->each(function (ArticleLesson $lesson) use ($media): void {
@@ -57,7 +59,7 @@ class ArticleLessonController extends Controller
             'excerpt' => $validated['excerpt'] ?: null,
             'body' => '',
             'image_path' => $coverPath,
-            'access_level' => $validated['access_level'],
+            'access_level' => $validated['section'] === 'news' ? 'free' : $validated['access_level'],
             'author_id' => $request->user()->id,
             'published_at' => now(),
             'sort_order' => (ArticleLesson::query()->where('section', $validated['section'])->min('sort_order') ?? 0) - 1,
@@ -85,7 +87,7 @@ class ArticleLessonController extends Controller
         $lesson->update([
             'title' => $validated['title'],
             'excerpt' => $validated['excerpt'] ?: null,
-            'access_level' => $validated['access_level'],
+            'access_level' => $validated['section'] === 'news' ? 'free' : $validated['access_level'],
             'image_path' => $coverPath,
         ]);
 
@@ -107,7 +109,7 @@ class ArticleLessonController extends Controller
     {
         $this->authorizeEditor($request);
         $validated = $request->validate([
-            'section' => ['required', 'in:lessons,recipes,knowledge'],
+            'section' => ['required', 'in:lessons,recipes,knowledge,news'],
             'lesson_ids' => ['required', 'array', 'min:1'],
             'lesson_ids.*' => ['required', 'integer', 'distinct', 'exists:article_lessons,id'],
         ]);
@@ -142,7 +144,7 @@ class ArticleLessonController extends Controller
     {
         return $request->validate([
             'title' => ['required', 'string', 'max:255'],
-            'section' => ['required', 'in:lessons,recipes,knowledge'],
+            'section' => ['required', 'in:lessons,recipes,knowledge,news'],
             'excerpt' => ['nullable', 'string', 'max:500'],
             'access_level' => ['required', 'in:free,paid'],
             'blocks' => ['required', 'json'],
@@ -235,6 +237,6 @@ class ArticleLessonController extends Controller
 
     private function section(Request $request): string
     {
-        return $request->validate(['section' => ['nullable', 'in:lessons,recipes,knowledge']])['section'] ?? 'lessons';
+        return $request->validate(['section' => ['nullable', 'in:lessons,recipes,knowledge,news']])['section'] ?? 'lessons';
     }
 }

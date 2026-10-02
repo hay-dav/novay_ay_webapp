@@ -1,15 +1,18 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/services/api';
 import VideoWatermark from '@/components/VideoWatermark.vue';
 import ContentLoadingState from '@/components/ContentLoadingState.vue';
 
 const auth = useAuthStore();
+const route = useRoute();
 const props = defineProps({ section: { type: String, default: 'lessons' } });
 const sectionCopy = computed(() => ({
     lessons: { title: 'Уроки', singular: 'урок', item: 'Урок', create: 'Создать урок', empty: 'Уроков пока нет', description: 'Полезные статьи и материалы курса — всё важное в одном месте.', icon: 'menu_book' },
     recipes: { title: 'Рецепты', singular: 'рецепт', item: 'Рецепт', create: 'Создать рецепт', empty: 'Рецептов пока нет', description: 'Практичные рецепты и рекомендации по приготовлению.', icon: 'restaurant' },
+    news: { title: 'Новости', singular: 'новость', item: 'Новость', create: 'Добавить новость', empty: 'Новостей пока нет', description: 'Актуальные новости и объявления курса.', icon: 'campaign' },
     knowledge: { title: 'База знаний', singular: 'материал', item: 'Материал', create: 'Создать материал', empty: 'Материалов пока нет', description: 'Полезные материалы, памятки и рекомендации экспертов.', icon: 'library_books' },
 }[props.section]));
 const allowVideo = computed(() => props.section === 'lessons');
@@ -40,11 +43,17 @@ async function loadLessons() {
     try {
         const { data } = await api.get('/article-lessons', { params: { section: props.section } });
         lessons.value = data.data;
+        openLinkedNews();
     }
     finally {
         lessonsLoading.value = false;
     }
 }
+function openLinkedNews() {
+    if (props.section === 'news')
+        selectedLesson.value = lessons.value.find((item) => String(item.id) === String(route.query.news ?? '')) ?? null;
+}
+watch(() => route.query.news, openLinkedNews);
 function addTextBlock() {
     form.value.blocks.push({ type: 'text', content: '' });
 }
@@ -132,7 +141,7 @@ async function createLesson() {
     const payload = new FormData();
     payload.append('title', form.value.title);
     payload.append('excerpt', form.value.excerpt);
-    payload.append('access_level', form.value.access_level);
+    payload.append('access_level', props.section === 'news' ? 'free' : form.value.access_level);
     payload.append('section', props.section);
     if (form.value.cover)
         payload.append('cover', form.value.cover);
@@ -253,7 +262,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="grid gap-6">
     <header class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-      <div><p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">Библиотека знаний</p><h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ sectionCopy.title }}</h2><p class="mt-2 max-w-2xl text-on-muted">{{ sectionCopy.description }}</p></div>
+      <div><p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">{{ props.section === 'news' ? 'Новости курса' : 'Библиотека знаний' }}</p><h2 class="mt-2 text-[32px] font-extrabold leading-10">{{ sectionCopy.title }}</h2><p class="mt-2 max-w-2xl text-on-muted">{{ sectionCopy.description }}</p></div>
       <button v-if="canCreateLessons" class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-primary-container to-primary-strong px-5 py-3 text-sm font-extrabold text-white" type="button" @click="createModalOpen = true"><span class="material-symbols-outlined">add</span>{{ sectionCopy.create }}</button>
     </header>
 
@@ -269,14 +278,14 @@ onBeforeUnmount(() => {
     <ContentLoadingState v-if="lessonsLoading" :label="`Загружаем: ${sectionCopy.title.toLocaleLowerCase('ru-RU')}…`" />
     <div v-else-if="filteredLessons.length" class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
       <article v-for="(lesson, index) in filteredLessons" :key="lesson.id" class="glass-panel group relative overflow-hidden rounded-[28px] transition hover:-translate-y-1 hover:border-primary/35 focus-within:ring-2 focus-within:ring-primary">
-        <div v-if="canCreateLessons && !searchQuery.trim()" class="absolute right-3 top-3 z-10 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
+        <div v-if="canCreateLessons && props.section !== 'news' && !searchQuery.trim()" class="absolute right-3 top-3 z-10 flex gap-2 rounded-2xl border border-white/10 bg-surface-low/90 p-1.5 shadow-lg backdrop-blur-md">
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || index === 0" :aria-label="`Переместить урок «${lesson.title}» выше`" @click.stop="moveLesson(lesson, -1)"><span class="material-symbols-outlined text-[20px]">arrow_upward</span></button>
           <button class="grid h-9 w-9 place-items-center rounded-xl text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35" type="button" :disabled="reordering || index === filteredLessons.length - 1" :aria-label="`Переместить урок «${lesson.title}» ниже`" @click.stop="moveLesson(lesson, 1)"><span class="material-symbols-outlined text-[20px]">arrow_downward</span></button>
         </div>
         <button class="block w-full text-left focus:outline-none" type="button" @click="selectedLesson = lesson">
           <img v-if="lesson.preview_image_path" class="aspect-[16/9] w-full object-cover" :src="lesson.preview_image_path" :alt="lesson.title" />
           <div v-else class="grid aspect-[16/9] place-items-center bg-gradient-to-br from-primary-container/45 to-surface-container text-primary"><span class="material-symbols-outlined text-5xl">article</span></div>
-          <div class="p-5"><p class="text-xs font-bold uppercase tracking-[0.14em] text-primary">{{ sectionCopy.item }}</p><h3 class="mt-2 line-clamp-2 text-xl font-extrabold leading-7">{{ lesson.title }}</h3><p class="mt-3 line-clamp-3 text-sm leading-6 text-on-muted">{{ lesson.excerpt }}</p><span class="mt-5 inline-flex items-center gap-2 text-sm font-extrabold text-primary">Открыть <span class="material-symbols-outlined text-[18px] transition group-hover:translate-x-1">arrow_forward</span></span></div>
+          <div class="p-5"><h3 class="line-clamp-2 text-xl font-extrabold leading-7">{{ lesson.title }}</h3><p class="mt-3 line-clamp-3 text-sm leading-6 text-on-muted">{{ lesson.excerpt }}</p><span class="mt-5 inline-flex items-center gap-2 text-sm font-extrabold text-primary">Открыть <span class="material-symbols-outlined text-[18px] transition group-hover:translate-x-1">arrow_forward</span></span></div>
         </button>
       </article>
     </div>
@@ -296,7 +305,7 @@ onBeforeUnmount(() => {
       <div v-if="createModalOpen" class="app-modal-backdrop z-[120] bg-black/70 backdrop-blur-sm" @mousedown.self="closeCreateModal">
         <form class="app-modal-panel glass-panel rounded-[28px] p-5 sm:max-w-3xl sm:p-7" role="dialog" aria-modal="true" aria-labelledby="lesson-create-title" @submit.prevent="createLesson">
           <div class="mb-6 flex items-start justify-between gap-4"><div><p class="text-xs font-bold uppercase tracking-[0.14em] text-primary">{{ editingLesson ? 'Редактирование' : 'Новый материал' }}</p><h3 id="lesson-create-title" class="mt-1 text-2xl font-extrabold">{{ editingLesson ? `Редактировать: ${sectionCopy.singular}` : sectionCopy.create }}</h3></div><button class="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-on-muted" type="button" :disabled="saving" aria-label="Закрыть" @click="closeCreateModal"><span class="material-symbols-outlined">close</span></button></div>
-          <div class="grid gap-4"><label class="grid gap-2 text-sm font-bold text-on-muted">Название<input v-model.trim="form.title" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" required maxlength="255" /></label><label class="grid gap-2 text-sm font-bold text-on-muted">Описание <span class="font-normal text-on-muted/70">необязательно</span><textarea v-model.trim="form.excerpt" class="min-h-24 rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" maxlength="500" /></label><fieldset class="grid gap-2"><legend class="text-sm font-bold text-on-muted">Доступ к уроку</legend><div class="grid grid-cols-2 rounded-2xl border border-white/10 bg-surface-low p-1"><button v-for="option in [{ value: 'free', label: 'Бесплатный' }, { value: 'paid', label: 'Платный' }]" :key="option.value" class="rounded-xl px-4 py-3 text-sm font-extrabold transition" :class="form.access_level === option.value ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="form.access_level = option.value">{{ option.label }}</button></div></fieldset><label class="grid cursor-pointer gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/35"><span class="flex items-center justify-between gap-3 text-sm font-bold"><span>Обложка урока</span><span class="font-normal text-on-muted/70">необязательно</span></span><img v-if="coverPreview" class="aspect-video w-full rounded-xl object-cover" :src="coverPreview" alt="Предпросмотр обложки урока" /><span v-else class="grid aspect-video place-items-center rounded-xl bg-surface-container text-on-muted"><span class="material-symbols-outlined text-5xl text-primary">add_photo_alternate</span></span><span class="truncate text-sm font-semibold text-primary">{{ form.cover?.name ?? (coverPreview ? 'Заменить текущую обложку' : 'Выбрать обложку с устройства') }}</span><input ref="coverInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="selectCover" /></label></div>
+          <div class="grid gap-4"><label class="grid gap-2 text-sm font-bold text-on-muted">Название<input v-model.trim="form.title" class="rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" required maxlength="255" /></label><label class="grid gap-2 text-sm font-bold text-on-muted">Описание <span class="font-normal text-on-muted/70">необязательно</span><textarea v-model.trim="form.excerpt" class="min-h-24 rounded-2xl border border-white/10 bg-surface-low px-4 py-3 text-on-surface outline-none focus:border-primary/50" maxlength="500" /></label><fieldset v-if="props.section !== 'news'" class="grid gap-2"><legend class="text-sm font-bold text-on-muted">Доступ к уроку</legend><div class="grid grid-cols-2 rounded-2xl border border-white/10 bg-surface-low p-1"><button v-for="option in [{ value: 'free', label: 'Бесплатный' }, { value: 'paid', label: 'Платный' }]" :key="option.value" class="rounded-xl px-4 py-3 text-sm font-extrabold transition" :class="form.access_level === option.value ? 'bg-primary text-[#470382]' : 'text-on-muted hover:bg-white/5'" type="button" @click="form.access_level = option.value">{{ option.label }}</button></div></fieldset><label class="grid cursor-pointer gap-3 rounded-2xl border border-dashed border-white/15 bg-surface-low p-4 transition hover:border-primary/35"><span class="flex items-center justify-between gap-3 text-sm font-bold"><span>{{ props.section === 'news' ? 'Обложка новости' : 'Обложка урока' }}</span><span class="font-normal text-on-muted/70">необязательно</span></span><img v-if="coverPreview" class="aspect-video w-full rounded-xl object-cover" :src="coverPreview" alt="Предпросмотр обложки урока" /><span v-else class="grid aspect-video place-items-center rounded-xl bg-surface-container text-on-muted"><span class="material-symbols-outlined text-5xl text-primary">add_photo_alternate</span></span><span class="truncate text-sm font-semibold text-primary">{{ form.cover?.name ?? (coverPreview ? 'Заменить текущую обложку' : 'Выбрать обложку с устройства') }}</span><input ref="coverInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="selectCover" /></label></div>
           <div class="mt-6 border-t border-white/10 pt-5"><div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h4 class="font-extrabold">Содержание</h4><p class="mt-1 text-sm text-on-muted">Добавляйте блоки в нужном порядке: {{ allowVideo ? 'текст, фото и видео' : 'текст и фото' }}.</p></div><div class="flex flex-wrap gap-2"><button class="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm font-bold text-on-muted" type="button" @click="addTextBlock"><span class="material-symbols-outlined text-[18px]">text_fields</span>Текст</button><button class="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm font-bold text-on-muted" type="button" @click="addImageBlock"><span class="material-symbols-outlined text-[18px]">image</span>Фото</button><button v-if="allowVideo" class="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm font-bold text-on-muted" type="button" @click="addVideoBlock"><span class="material-symbols-outlined text-[18px]">video_file</span>Видео</button></div></div>
             <div class="mt-4 grid gap-4"><article v-for="(block, index) in form.blocks" :key="index" class="rounded-2xl border border-white/10 bg-surface-low p-4"><div class="mb-3 flex items-center justify-between"><span class="text-sm font-extrabold text-primary">{{ block.type === 'text' ? 'Текстовый блок' : block.type === 'image' ? 'Блок с фото' : 'Видеоблок' }}</span><button v-if="form.blocks.length > 1" class="grid h-8 w-8 place-items-center rounded-lg text-on-muted hover:bg-red-500/15 hover:text-red-200" type="button" aria-label="Удалить блок" @click="removeBlock(index)"><span class="material-symbols-outlined text-[18px]">delete</span></button></div><textarea v-if="block.type === 'text'" v-model="block.content" class="min-h-36 w-full rounded-xl border border-white/10 bg-surface-container px-4 py-3 text-on-surface outline-none focus:border-primary/50" placeholder="Введите текст этого фрагмента урока" required /><label v-else-if="block.type === 'image'" class="grid cursor-pointer gap-3"><img v-if="block.preview" class="max-h-80 w-full rounded-xl object-cover" :src="block.preview" alt="Предпросмотр фото" /><span v-else class="grid aspect-video place-items-center rounded-xl border border-dashed border-white/15 bg-surface-container text-on-muted"><span class="material-symbols-outlined text-4xl">add_photo_alternate</span></span><span class="truncate text-sm font-semibold text-primary">{{ block.file?.name ?? 'Выбрать одно или несколько фото' }}</span><span class="text-xs font-normal text-on-muted">Можно выбрать несколько изображений одновременно</span><input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple @change="selectBlockImages($event, block, index)" /></label><label v-else class="grid cursor-pointer gap-3"><video v-if="block.preview" class="max-h-80 w-full rounded-xl bg-black" :src="block.preview" controls playsinline /><span v-else class="grid aspect-video place-items-center rounded-xl border border-dashed border-white/15 bg-surface-container text-on-muted"><span class="material-symbols-outlined text-4xl">video_file</span></span><span class="truncate text-sm font-semibold text-primary">{{ block.file?.name ?? 'Выбрать видео с устройства (до 2 ГБ)' }}</span><input class="sr-only" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-m4v" @change="selectBlockVideo($event, block)" /></label></article></div>
           </div>

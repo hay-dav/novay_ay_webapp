@@ -76,6 +76,7 @@ const navItems = computed(() => {
             { label: 'Эфиры с экспертами', to: '/expert-lives', icon: 'live_tv' },
             { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
             { label: 'База знаний', to: '/knowledge-base', icon: 'library_books' },
+        { label: 'Новости', to: '/news', icon: 'campaign' },
             { label: 'Участницы', to: '/participants', icon: 'groups' },
             ...(['admin', 'curator'].includes(auth.user?.role ?? '') ? [{ label: 'Доступы', to: '/access-management', icon: 'key' }] : []),
             { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
@@ -90,6 +91,8 @@ const navItems = computed(() => {
         { label: 'Эфиры с экспертами', to: '/expert-lives', icon: 'live_tv' },
         { label: 'Рецепты', to: '/recipes', icon: 'restaurant' },
         { label: 'База знаний', to: '/knowledge-base', icon: 'library_books' },
+        { label: 'Новости', to: '/news', icon: 'campaign' },
+        { label: 'Избранное', to: '/favorites', icon: 'favorite' },
         { label: 'Прогресс', to: '/progress', icon: 'assignment' },
         { label: 'Тарифы', to: '/tariffs', icon: 'sell' },
         { label: 'Чаты', to: '/chat', icon: 'forum', unread: unreadChatCount.value },
@@ -103,7 +106,11 @@ const orderedNavItems = computed(() => [...visibleNavItems.value].sort((first, s
         return 1;
     return 0;
 }));
-const mobileMenuItems = computed(() => visibleNavItems.value.filter((item) => !['/app', '/chat'].includes(item.to)));
+const mobileMenuItems = computed(() => {
+    const items = visibleNavItems.value.filter((item) => !['/app', '/chat', '/favorites'].includes(item.to));
+    return ['/lessons', '/workouts'].map((path) => items.find((item) => item.to === path)).filter(Boolean)
+        .concat(items.filter((item) => !['/lessons', '/workouts'].includes(item.to)));
+});
 function openChatDirectory() {
     mobileNavigationOpen.value = false;
     // When the user is already inside a conversation, the route does not
@@ -310,7 +317,7 @@ onBeforeUnmount(() => {
 <template>
   <RouterView v-if="route.name === 'login' || route.name === 'landing' || route.name === 'privacy-policy'" />
 
-  <div v-else class="app-gradient min-h-screen text-on-surface">
+  <div v-else class="app-gradient min-h-screen overflow-x-hidden text-on-surface">
     <aside class="glass-panel fixed bottom-6 left-6 top-6 z-40 hidden w-[236px] flex-col rounded-[24px] p-5 lg:flex">
       <RouterLink to="/" class="mb-9 flex h-[72px] items-center" aria-label="Новая Я">
         <img class="h-full w-full object-contain object-left [filter:brightness(0)_invert(1)_drop-shadow(0_0_8px_rgba(255,255,255,0.45))]" src="/public-image/novaya-ya-logo-header.png" alt="Новая Я, Курс Лазаревой" />
@@ -343,7 +350,7 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <main class="mx-auto min-h-screen w-full max-w-[1280px] px-5 pb-28 pt-7 lg:pl-[292px] lg:pr-10" :class="route.name === 'chat' ? 'max-lg:px-0 max-lg:pb-20 max-lg:pt-0' : ''">
+    <main class="mx-auto min-h-screen min-w-0 w-full max-w-[1280px] px-5 pb-28 pt-7 lg:pl-[292px] lg:pr-10" :class="route.name === 'chat' ? 'max-lg:px-0 max-lg:pb-20 max-lg:pt-0' : ''">
       <header class="mb-8 flex items-center justify-between gap-4" :class="route.name === 'chat' ? 'max-lg:hidden' : ''">
         <div>
           <RouterLink to="/" class="mb-2 flex h-9 items-center lg:hidden" aria-label="Новая Я">
@@ -424,9 +431,10 @@ onBeforeUnmount(() => {
         <section class="mobile-navigation-sheet brand-scrollbar relative z-10 w-full overflow-y-auto rounded-[28px] border border-white/10 bg-surface-highest p-4 shadow-2xl" role="dialog" aria-modal="true" aria-label="Разделы приложения">
           <div class="mb-3 flex items-center justify-between px-2"><h2 class="text-xl font-extrabold">Меню</h2><button class="grid h-10 w-10 place-items-center rounded-xl text-on-muted hover:bg-white/5" type="button" aria-label="Закрыть меню" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined">close</span></button></div>
           <div class="grid grid-cols-2 gap-3">
-            <RouterLink v-for="item in mobileMenuItems" :key="item.to" :to="item.to" class="flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 bg-surface-container p-4 text-on-surface transition hover:border-primary/35 hover:bg-primary/10" active-class="border-primary/50 bg-primary/15 text-primary" @click="mobileNavigationOpen = false">
+            <RouterLink v-for="item in mobileMenuItems" :key="item.to" :to="item.to" class="flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 bg-surface-container p-4 text-on-surface transition hover:border-primary/35 hover:bg-primary/10" :class="{ 'live-accent-tile': ['/lessons', '/workouts'].includes(item.to) }" active-class="border-primary/50 bg-primary/15 text-primary" @click="mobileNavigationOpen = false">
               <span class="material-symbols-outlined text-[28px] text-primary">{{ item.icon }}</span><span class="text-sm font-extrabold leading-5">{{ item.label }}</span>
             </RouterLink>
+            <RouterLink v-if="!auth.isTrainer" to="/favorites" class="live-accent-tile flex min-h-24 flex-col justify-between rounded-2xl border border-white/10 p-4" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined text-[28px]">favorite</span><span class="text-sm font-extrabold leading-5">Избранное</span></RouterLink>
           </div>
         </section>
         <span class="pointer-events-none absolute -bottom-3 left-1/2 z-20 h-7 w-7 -translate-x-1/2 rotate-45 border-b border-r border-white/10 bg-surface-highest shadow-[8px_8px_18px_rgba(109,56,168,0.18)]" aria-hidden="true" />
@@ -436,7 +444,7 @@ onBeforeUnmount(() => {
     <nav class="fixed bottom-0 z-[70] w-full rounded-t-[28px] border-t border-white/5 bg-surface-highest/90 px-4 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(109,56,168,0.15)] backdrop-blur-2xl lg:hidden" aria-label="Основная навигация">
       <div class="mx-auto grid h-20 max-w-md grid-cols-3 items-center">
         <RouterLink to="/app" class="tap-clear flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="mobileNavigationOpen = false"><span class="material-symbols-outlined mb-1 text-[24px]">home</span><span class="text-[10px] font-semibold">Главная</span></RouterLink>
-        <button class="tap-clear flex flex-col items-center justify-center text-on-muted transition" :class="mobileNavigationOpen ? 'font-bold text-primary' : ''" type="button" :aria-expanded="mobileNavigationOpen" @click="mobileNavigationOpen = !mobileNavigationOpen"><span class="material-symbols-outlined leading-none text-primary" style="font-size: 35px">apps</span><span class="text-[10px] font-semibold">Меню</span></button>
+        <button class="tap-clear flex flex-col items-center justify-center rounded-2xl text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" :class="mobileNavigationOpen ? 'bg-primary/15 font-bold text-primary' : ''" type="button" :aria-expanded="mobileNavigationOpen" @click="mobileNavigationOpen = !mobileNavigationOpen"><span class="material-symbols-outlined leading-none text-primary" style="font-size: 35px">apps</span><span class="text-[10px] font-semibold">Меню</span></button>
         <RouterLink to="/chat" class="tap-clear relative flex flex-col items-center justify-center text-on-muted transition" active-class="font-bold text-primary" @click="openChatDirectory"><span class="material-symbols-outlined mb-1 text-[24px]">forum</span><span class="text-[10px] font-semibold">Чаты</span><span v-if="unreadChatCount" class="absolute right-[26%] top-2 grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-[#470382]">{{ unreadChatCount > 99 ? '99+' : unreadChatCount }}</span></RouterLink>
       </div>
     </nav>
